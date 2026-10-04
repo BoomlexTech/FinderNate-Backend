@@ -7,10 +7,12 @@ import {
     verifySubscriptionPayment,
     subscriptionWebhook,
     verifyGooglePlayPurchase,
+    syncGooglePlaySubscription,
     googlePlayNotification,
     testUpgradeSubscription
 } from '../controllers/subscription/index.js';
 import { verifyJWT } from '../middlewares/auth.middleware.js';
+import { subscriptionSyncRateLimit } from '../middlewares/rateLimiter.middleware.js';
 
 const router = Router();
 
@@ -40,6 +42,11 @@ router.post('/verify-payment', verifySubscriptionPayment);       // POST /api/v1
 // own billing system for anything unlocking in-app functionality, so the app
 // cannot use the Cashfree routes above for subscriptions.
 router.post('/google-play/verify', verifyGooglePlayPurchase);    // POST /api/v1/subscription/google-play/verify
+
+// Re-reads the caller's current Play subscription from Play (the app calls it
+// after scheduling a downgrade, which Play may not announce straight away).
+// Rate limited per user because every call is a request to Google.
+router.post('/google-play/sync', subscriptionSyncRateLimit, syncGooglePlaySubscription); // POST /api/v1/subscription/google-play/sync
 
 // @deprecated - TEST ONLY: Upgrade subscription without payment (for testing business features)
 // This endpoint should not be used in production. Use /create-order and /verify-payment instead

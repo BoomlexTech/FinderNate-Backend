@@ -342,6 +342,29 @@ export const feedbackRateLimit = rateLimit({
     store: new RedisStore({ prefix: "rl:feedback:", windowMs: 60 * 60 * 1000 })
 });
 
+// POST /subscription/google-play/sync. Unlike the other subscription routes it
+// makes a call to Google's Developer API on every request (one purchases.
+// subscriptionsv2.get), and that API has a quota the whole platform shares, so
+// one account looping on it could starve the verify calls and the renewal
+// notifications that real purchases depend on. A real user asks once, right
+// after scheduling a plan change, so the budget is small. Keyed by user id (the
+// route runs verifyJWT first), not IP, because the cost lands on the account
+// making the calls. Fails open: it is traffic shaping, not a security control.
+export const subscriptionSyncRateLimit = rateLimit({
+    windowMs: 60 * 1000, // 1 minute
+    max: 6,
+    message: {
+        error: 'Too many refresh requests. Please wait a minute and try again.',
+        retryAfter: 60
+    },
+    standardHeaders: true,
+    legacyHeaders: false,
+    skip: (req) => req.method === 'OPTIONS',
+    keyGenerator: (req) => String(req.user?._id || 'anonymous'),
+    passOnStoreError: true,
+    store: new RedisStore({ prefix: 'rl:subsync:', windowMs: 60 * 1000 })
+});
+
 // Rate limiter for notification endpoints
 export const notificationRateLimit = rateLimit({
     windowMs: 30 * 1000, // 30 seconds

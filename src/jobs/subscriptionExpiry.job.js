@@ -61,6 +61,19 @@ export const handleExpiredSubscriptions = async () => {
                 // Ask Play instead and take whatever answer it gives; that call
                 // extends the row when it has renewed and deactivates it when
                 // it genuinely ended.
+                //
+                // `playPurchaseToken` is always the row's CURRENT token (a
+                // replaced one is moved to retiredPlayTokens when the row is
+                // rewritten), so this asks about the plan the user actually has
+                // and never about one they changed away from. reconcile also
+                // clears a scheduled plan switch once it has happened or the
+                // subscription has ended. A plan switch whose new token we have
+                // not seen yet is picked up by that token's own notification
+                // or the app's verify call; Play offers no way to look it up
+                // from the old token, so this job cannot find it. For the same
+                // reason reconcile leaves a row whose token expired in the last
+                // few minutes alone (the successor may be on its way); this
+                // job is what ends it on its next run if nothing arrived.
                 if (subscription.source === 'google_play') {
                     if (!subscription.playPurchaseToken) {
                         console.warn(`⚠️ Play subscription for user ${userId} has no purchase token — leaving as-is for manual review`);

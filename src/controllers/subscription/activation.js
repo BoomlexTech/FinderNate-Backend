@@ -115,6 +115,133 @@ export const findRedemption = async (paymentIds) => {
 };
 
 /**
+ * Is [subscription] paying out right now? The same test resolvePlanTier and
+ * getSubscriptionStatus apply, so "entitled" means one thing everywhere.
+ */
+export const isEntitledNow = (subscription, now = new Date()) =>
+    Boolean(
+        subscription &&
+        subscription.status === 'active' &&
+        subscription.endDate &&
+        new Date(subscription.endDate) > now
+    );
+
+/**
+ * Is Google Play going to charge this user AGAIN for a plan they hold right now?
+ *
+ * The question behind both double-billing guards: a Cashfree order must not be
+ * sold on top of such a plan, and a Play purchase that is not an upgrade or
+ * downgrade of it must not be accepted. Either would leave two things billing
+ * (or, on the web, Play billing a plan we have stopped listening to), and the
+ * next Play renewal would flip the plan back. A Play plan the user has already
+ * cancelled (autoRenew false) will not bill again, so it is not a conflict.
+ */
+export const isRenewingPlaySubscription = (subscription, now = new Date()) =>
+    Boolean(
+        subscription &&
+        subscription.source === 'google_play' &&
+        subscription.autoRenew === true &&
+        isEntitledNow(subscription, now)
+    );
+
+/**
+ * Could Google Play still be charging this user, whatever endDate says?
+ *
+ * [isRenewingPlaySubscription] is the strict form and needs the plan to be
+ * entitled right now. A Play row that is past its endDate but still `active`
+ * with autoRenew on is the other case worth a look: either Play has renewed and
+ * we have not heard yet, or the user is in Play's grace period and Play is still
+ * retrying the card. Neither is knowable from the row, so this only says "worth
+ * asking Play" and playRowStillRenews (googlePlay.js) does the asking.
+ */
+export const isPossiblyBillingPlaySubscription = (subscription) =>
+    Boolean(
+        subscription &&
+        subscription.source === 'google_play' &&
+        subscription.status === 'active' &&
+        subscription.autoRenew === true &&
+        subscription.playPurchaseToken
+    );
+
+const PLAN_RANK = { free: 0, small_business: 1, corporate: 2 };
+
+/** Corporate > Small Business > Free; an unknown plan counts as Free. */
+export const planRank = (plan) => PLAN_RANK[plan] ?? 0;
+
+/**
+ * The success line for an activation. "Upgraded" is only true for an upgrade, so
+ * a change to a LOWER plan is worded as a switch (it used to say "upgraded to
+ * Small Business" to someone who had just moved down from Corporate).
+ * [previousPlan] is the plan the user is moving away from, or null when there is
+ * none (a first purchase). It is NOT limited to a plan that is still running: a
+ * scheduled downgrade lands exactly when the old plan's period ends, so by then
+ * the old plan no longer counts as entitled but is still what the user moved
+ * down from.
+ */
+export const planChangeMessage = ({ planName, plan, previousPlan, alreadyApplied }) => {
+    if (alreadyApplied) return `Your ${planName} plan is already active.`;
+    const movedDown =
+        Boolean(previousPlan) &&
+        previousPlan !== plan &&
+        planRank(plan) < planRank(previousPlan);
+    return movedDown
+        ? `Successfully switched to ${planName} plan!`
+        : `Successfully upgraded to ${planName} plan!`;
+};
+
+/**
+ * The most replaced Play tokens we remember per user. Each costs a user real
+ * money to create (every one is a paid plan change), so the cap is only there to
+ * keep the row bounded; it is far above anything a real account reaches.
+ */
+export const MAX_RETIRED_PLAY_TOKENS = 50;
+
+/**
+ * Adds [token] to the row's retired list, once.
+ *
+ * Deliberately addToSet, not "assign a new array": assigning makes Mongoose send
+ * a $set of the whole array AND put `__v` in the update's filter, so two writers
+ * that both loaded the row (the app's verify and Play's notification for the same
+ * new token, a few seconds apart) race on the version, and the loser gets a
+ * VersionError after the user has already paid. $addToSet only increments `__v`,
+ * and it is idempotent, so both writers can retire the same token safely. The cap
+ * is applied afterwards by trimRetiredPlayTokens, again without a version check.
+ */
+const retirePlayToken = (subscription, token) => {
+    if (!token) return;
+    if (!Array.isArray(subscription.retiredPlayTokens)) subscription.retiredPlayTokens = [];
+    subscription.retiredPlayTokens.addToSet(token);
+};
+
+/** Keeps only the newest MAX_RETIRED_PLAY_TOKENS entries, in one atomic update. */
+const trimRetiredPlayTokens = async (subscription) => {
+    if (!(subscription.retiredPlayTokens?.length > MAX_RETIRED_PLAY_TOKENS)) return;
+    await Subscription.updateOne(
+        { _id: subscription._id },
+        { $push: { retiredPlayTokens: { $each: [], $slice: -MAX_RETIRED_PLAY_TOKENS } } }
+    );
+};
+
+/**
+ * A Subscription as clients may see it.
+ *
+ * The raw document carries three things no client needs and one must never see:
+ * the Play purchase token (a payment credential, as googlePlay.js notes),
+ * `redeemedPaymentIds` (the whole replay-guard history) and `retiredPlayTokens`.
+ * Everything else is kept as it was so no client has to change.
+ */
+export const toPublicSubscription = (subscription) => {
+    if (!subscription) return null;
+    const plain = typeof subscription.toObject === 'function'
+        ? subscription.toObject()
+        : { ...subscription };
+    delete plain.playPurchaseToken;
+    delete plain.redeemedPaymentIds;
+    delete plain.retiredPlayTokens;
+    return plain;
+};
+
+/**
  * Writes an activation that the caller has already validated.
  *
  * [endDate] is the caller's to compute, because the two gateways disagree about
@@ -122,6 +249,14 @@ export const findRedemption = async (paymentIds) => {
  * whereas Google Play tells us the expiry outright and is authoritative — it
  * has already applied any proration, pause, grace period or free trial, so
  * recomputing it locally would fight the store and drift.
+ *
+ * Whatever Play token the row held before and no longer holds afterwards is
+ * moved to `retiredPlayTokens` here, in the one place the row is rewritten, so
+ * no caller can forget: a replacement purchase retires the old token, and a
+ * Cashfree activation retires the Play token it displaces (and clears it, so the
+ * row no longer claims to be Play-backed). [pendingPlan] / [pendingPlanAt] are a
+ * scheduled switch Play reported; leaving them out clears any earlier one, which
+ * is what "the switch happened" and "the user changed their mind" both need.
  */
 export const persistActivation = async ({
     user,
@@ -132,11 +267,19 @@ export const persistActivation = async ({
     source,
     autoRenew = true,
     playPurchaseToken = null,
-    playProductId = null
+    playProductId = null,
+    pendingPlan = null,
+    pendingPlanAt = null
 }) => {
     let subscription = await Subscription.findOne({ userId: user._id });
     const previousPlan = subscription?.plan;
     const previousStatus = subscription?.status;
+    // The plan the user was actually ENTITLED to before this write, so a caller
+    // can tell a plan change from a first purchase or a renewal. A lapsed row
+    // does not count: there was nothing to change from. (previousPlan above is
+    // the row's plan whether or not it was still running; a caller that knows a
+    // lapsed row WAS the thing being switched away from uses that one.)
+    const previousEntitledPlan = isEntitledNow(subscription) ? subscription.plan : null;
 
     if (subscription) {
         subscription.plan      = plan;
@@ -146,9 +289,31 @@ export const persistActivation = async ({
         subscription.paymentId = paymentId;
         subscription.autoRenew = autoRenew;
         if (source)            subscription.source = source;
-        if (playPurchaseToken) subscription.playPurchaseToken = playPurchaseToken;
+
+        if (playPurchaseToken) {
+            if (subscription.playPurchaseToken && subscription.playPurchaseToken !== playPurchaseToken) {
+                retirePlayToken(subscription, subscription.playPurchaseToken);
+            }
+            // A token that becomes current cannot also sit in the retired list.
+            // This is the one way a retired token comes back: Play reports it
+            // live and billing again (the user resubscribed to it), which
+            // googlePlay.js treats as an ordinary purchase rather than ignoring
+            // a plan the user is being charged for.
+            if (subscription.retiredPlayTokens?.includes(playPurchaseToken)) {
+                subscription.retiredPlayTokens.pull(playPurchaseToken);
+            }
+            subscription.playPurchaseToken = playPurchaseToken;
+        } else if (source === 'cashfree' && subscription.playPurchaseToken) {
+            retirePlayToken(subscription, subscription.playPurchaseToken);
+            subscription.playPurchaseToken = null;
+            subscription.playProductId = null;
+        }
         if (playProductId)     subscription.playProductId = playProductId;
+
+        subscription.pendingPlan   = pendingPlan;
+        subscription.pendingPlanAt = pendingPlanAt;
         await subscription.save();
+        await trimRetiredPlayTokens(subscription);
     } else {
         subscription = await Subscription.create({
             userId: user._id,
@@ -160,7 +325,9 @@ export const persistActivation = async ({
             autoRenew,
             source: source || undefined,
             playPurchaseToken: playPurchaseToken || undefined,
-            playProductId: playProductId || undefined
+            playProductId: playProductId || undefined,
+            pendingPlan,
+            pendingPlanAt
         });
     }
 
@@ -181,7 +348,40 @@ export const persistActivation = async ({
         console.error('Cache invalidation error:', cacheError);
     }
 
-    return { subscription, business };
+    return { subscription, business, previousEntitledPlan, previousPlan: previousPlan || null };
+};
+
+/**
+ * Makes the Business doc agree with a subscription that is paying out right now.
+ *
+ * The Subscription row and the Business doc are two writes, and two writers that
+ * land at the same moment (the notification for a plan's end and the one for its
+ * successor) can leave them disagreeing: an active, entitled row next to a
+ * Business still on the free tier. Nothing else would ever fix that until the
+ * next renewal a month later, so the paths that notice a plan is already applied
+ * call this. A no-op when they agree, or when the subscription is not entitled.
+ */
+export const syncBusinessToSubscription = async (subscription) => {
+    if (!isEntitledNow(subscription)) return false;
+    const wanted = PLAN_TO_BUSINESS_PLAN[subscription.plan];
+    if (!wanted) return false;
+
+    const Business = (await import('../../models/business.models.js')).default;
+    const business = await Business.findOne({ userId: subscription.userId })
+        .select('plan subscriptionStatus')
+        .lean();
+    if (!business || (business.plan === wanted && business.subscriptionStatus === 'active')) return false;
+
+    await Business.updateOne(
+        { userId: subscription.userId },
+        { $set: { plan: wanted, subscriptionStatus: 'active', isVerified: true } }
+    );
+    try {
+        await invalidateCaches(subscription.userId);
+    } catch (cacheError) {
+        console.error('Cache invalidation error:', cacheError);
+    }
+    return true;
 };
 
 /**
@@ -200,19 +400,46 @@ export const persistActivation = async ({
  * Deliberately does not delete the Subscription: `redeemedPaymentIds` is the
  * replay guard and must survive, and the row is the only record of what the
  * user used to have.
+ *
+ * Compare-and-set. [subscription] was loaded some time ago, and a plan switch
+ * makes two notifications arrive together: the old token ending and the new one
+ * starting. If the new plan's activation lands between our read and this write,
+ * a plain save() of the stale copy would still go through (it carries no version
+ * check for these fields) and then downgrade the Business that the activation
+ * had just raised: an active Corporate/Small Business row next to a free-tier
+ * Business, which nothing would repair until the next renewal. So the row is
+ * ended only if it still has the status and token we read; otherwise somebody
+ * else changed it, this is no longer our decision, and null is returned without
+ * touching the Business.
  */
 export const persistDeactivation = async ({ subscription, status = 'expired' }) => {
-    subscription.status = status;
-    subscription.autoRenew = false;
-    await subscription.save();
+    const ended = await Subscription.findOneAndUpdate(
+        {
+            _id: subscription._id,
+            status: subscription.status,
+            playPurchaseToken: subscription.playPurchaseToken || null
+        },
+        // Nothing is left to switch to once the subscription itself is over.
+        { $set: { status, autoRenew: false, pendingPlan: null, pendingPlanAt: null } },
+        { new: true }
+    );
+    if (!ended) return null;
 
-    await downgradeBusinessToFree(subscription.userId);
+    await downgradeBusinessToFree(ended.userId);
+
+    // The Business write above is a second step after the row's. If an
+    // activation slipped in between the two, put its plan back.
+    try {
+        await syncBusinessToSubscription(await Subscription.findOne({ _id: ended._id }));
+    } catch (syncError) {
+        console.error('Could not re-check the Business plan after ending a subscription:', syncError?.message);
+    }
 
     try {
-        await invalidateCaches(subscription.userId);
+        await invalidateCaches(ended.userId);
     } catch (cacheError) {
         console.error('Cache invalidation error:', cacheError);
     }
 
-    return subscription;
+    return ended;
 };

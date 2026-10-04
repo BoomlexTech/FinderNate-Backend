@@ -10,8 +10,51 @@ import {
     getPostQuota,
     getProductCatalogUsage
 } from '../../utils/planLimits.js';
+import { PLAY_PACKAGE_NAME } from '../../config/googlePlay.config.js';
+import { toPublicSubscription } from './activation.js';
 
 const toIso = (date) => (date ? new Date(date).toISOString() : null);
+
+/**
+ * Where to send a Google Play subscriber to manage (cancel, change payment) the
+ * plan they hold. The sku puts them on that subscription's own page rather than
+ * the list of everything they pay for.
+ */
+const buildPlayManageUrl = (productId) => {
+    const sku = productId ? `sku=${encodeURIComponent(productId)}&` : '';
+    return `https://play.google.com/store/account/subscriptions?${sku}package=${encodeURIComponent(PLAY_PACKAGE_NAME)}`;
+};
+
+/**
+ * Everything a client needs to say what happens to the plan at the end of the
+ * period, without re-deriving it from `source` and `autoRenew` (which together
+ * hide two traps: legacy website rows default `autoRenew` to true although a
+ * website plan never renews, and a Play row is only "ending" once Play has said
+ * so). Null when there is no active subscription.
+ *
+ *   autoRenew          true ONLY when Play will charge again. Always false for a
+ *                      website (Cashfree) plan, whatever the stored flag says.
+ *   endsWithoutRenewal the plan is active and will not be renewed: always true
+ *                      for Cashfree, true for Play once renewal is switched off.
+ *   pendingPlan/At     a downgrade Play has scheduled for the end of the period.
+ *   manageUrl          Play subscriptions only: where to cancel or change it.
+ */
+export const buildRenewalInfo = (subscription) => {
+    if (!subscription) return null;
+
+    const isPlay = subscription.source === 'google_play';
+    const autoRenew = isPlay && subscription.autoRenew === true;
+
+    return {
+        source: subscription.source,
+        autoRenew,
+        endsOn: toIso(subscription.endDate),
+        endsWithoutRenewal: !autoRenew,
+        pendingPlan: subscription.pendingPlan || null,
+        pendingPlanAt: toIso(subscription.pendingPlanAt),
+        manageUrl: isPlay ? buildPlayManageUrl(subscription.playProductId) : null
+    };
+};
 
 /**
  * The Corporate account-manager contact card, for the business to see.
@@ -61,7 +104,10 @@ export const getSubscriptionStatus = asyncHandler(async (req, res) => {
 
     res.status(200).json(
         new ApiResponse(200, {
-            subscription,
+            // Without playPurchaseToken (a payment credential), the replay-guard
+            // history and the retired tokens: no client needs them.
+            subscription: toPublicSubscription(subscription),
+            renewal: buildRenewalInfo(subscription),
             tier: subscriptionTier,
             isBusinessProfile,
             features: {

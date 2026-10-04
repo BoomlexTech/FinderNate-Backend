@@ -87,6 +87,45 @@ const SubscriptionSchema = new mongoose.Schema({
     playProductId: {
         type: String,
         default: null
+    },
+    /**
+     * Play purchase tokens that used to be this user's current one and no longer
+     * are, because they were replaced by an upgrade/downgrade, or because a
+     * website (Cashfree) purchase took over the plan.
+     *
+     * The row holds ONE current token, so without this list a replaced token is
+     * indistinguishable from a stranger: Play keeps sending notifications about
+     * it (it expires, it is cancelled, or it is simply still alive), and each one
+     * used to look like "the user's subscription changed". An old token that
+     * reports ACTIVE flipped a Corporate payer back to Small Business; one that
+     * reports EXPIRED could switch the new plan off. Anything found here is
+     * ignored outright: it neither activates nor deactivates.
+     *
+     * Capped (see MAX_RETIRED_PLAY_TOKENS in activation.js), newest last.
+     */
+    retiredPlayTokens: {
+        type: [String],
+        default: [],
+        index: true
+    },
+    /**
+     * A plan change Play has already scheduled but that has not happened yet: the
+     * user asked to downgrade (Corporate -> Small Business) and keeps the plan
+     * they paid for until the period ends. Read from the purchase's
+     * lineItems[0].deferredItemReplacement. `plan` stays the CURRENT plan until
+     * the switch actually happens, so every entitlement check stays correct.
+     * Cleared by any activation (the switch happened, or the user changed their
+     * mind) and by a deactivation.
+     */
+    pendingPlan: {
+        type: String,
+        enum: ['small_business', 'corporate', null],
+        default: null
+    },
+    /** When [pendingPlan] takes over — the end of the period already paid for. */
+    pendingPlanAt: {
+        type: Date,
+        default: null
     }
 }, { timestamps: true });
 

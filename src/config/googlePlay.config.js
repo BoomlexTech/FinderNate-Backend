@@ -98,9 +98,16 @@ const authorizedHeaders = async () => {
  *
  * Shape we care about:
  *   subscriptionState: SUBSCRIPTION_STATE_ACTIVE | _IN_GRACE_PERIOD |
- *                      _CANCELED | _EXPIRED | _ON_HOLD | _PAUSED | _PENDING
- *   latestOrderId:     the receipt id — our replay key
- *   lineItems[]:       { productId, expiryTime, autoRenewingPlan? }
+ *                      _CANCELED | _EXPIRED | _ON_HOLD | _PAUSED | _PENDING |
+ *                      _PENDING_PURCHASE_CANCELED
+ *   lineItems[]:       { productId, expiryTime, latestSuccessfulOrderId (the
+ *                        receipt id — our replay key), autoRenewingPlan?,
+ *                        deferredItemReplacement? { productId } — a downgrade
+ *                        Play has scheduled for the end of the period }
+ *   linkedPurchaseToken: the token this purchase REPLACES (an upgrade, a
+ *                      downgrade, or a re-signup of a cancelled subscription)
+ *   canceledStateContext.replacementCancellation: set on the OLD token once a
+ *                      new subscription has replaced it
  *   externalAccountIdentifiers.obfuscatedExternalAccountId:
  *                      the value the app passed at purchase time — our userId
  *   acknowledgementState: ACKNOWLEDGEMENT_STATE_PENDING | _ACKNOWLEDGED

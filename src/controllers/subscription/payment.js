@@ -25,8 +25,13 @@ import { SUBSCRIPTION_PLANS, isPlanComingSoon } from './plans.js';
 import {
     addOneMonth,
     findRedemption,
-    persistActivation
+    isPossiblyBillingPlaySubscription,
+    isRenewingPlaySubscription,
+    persistActivation,
+    planChangeMessage,
+    toPublicSubscription
 } from './activation.js';
+import { playRowStillRenews } from './googlePlay.js';
 
 // Which plan a Cashfree order was actually for. Derived from the order note we
 // set at creation time, falling back to the amount paid — never from the client.
@@ -104,7 +109,7 @@ const activateSubscriptionForOrder = async ({ cfOrder, cfPaymentId, expectedUser
     const redeemedBy = await findRedemption(redemptionKeys);
     if (redeemedBy) {
         if (redeemedBy.userId.toString() === user._id.toString()) {
-            return { user, plan, subscription: redeemedBy, business: null, alreadyApplied: true };
+            return { user, plan, subscription: redeemedBy, business: null, alreadyApplied: true, previousEntitledPlan: null };
         }
         throw new ApiError(400, 'This payment has already been used to activate a subscription');
     }
@@ -119,7 +124,20 @@ const activateSubscriptionForOrder = async ({ cfOrder, cfPaymentId, expectedUser
         subscription.status === 'active' &&
         subscription.endDate > now;
 
-    const { subscription: saved, business } = await persistActivation({
+    // create-order refuses to sell on top of a Play plan that will renew, but the
+    // money may already be on its way (an order opened before the Play purchase,
+    // or a stale tab). We still honour a payment we have taken. persistActivation
+    // then retires the Play token, so the row stops listening to it, and Play —
+    // which we cannot cancel from here — keeps billing until the user cancels it.
+    // Say so loudly: that is a user paying twice and it needs a human to look.
+    if (isRenewingPlaySubscription(subscription, now)) {
+        console.warn(
+            `⚠️ Cashfree payment ${cfPaymentId} activated over a renewing Google Play plan for user ${user._id}; ` +
+            'Play will keep billing until the user cancels it in Google Play'
+        );
+    }
+
+    const { subscription: saved, business, previousEntitledPlan } = await persistActivation({
         user,
         plan,
         startDate: stillRunningSamePlan ? (subscription.startDate || now) : now,
@@ -131,7 +149,7 @@ const activateSubscriptionForOrder = async ({ cfOrder, cfPaymentId, expectedUser
         autoRenew: false
     });
 
-    return { user, plan, subscription: saved, business, alreadyApplied: false };
+    return { user, plan, subscription: saved, business, alreadyApplied: false, previousEntitledPlan };
 };
 
 export const createSubscriptionOrder = asyncHandler(async (req, res) => {
@@ -167,6 +185,32 @@ export const createSubscriptionOrder = asyncHandler(async (req, res) => {
 
     const planDetails = SUBSCRIPTION_PLANS[plan];
     if (!planDetails) throw new ApiError(400, 'Invalid subscription plan');
+
+    // ── Is Google Play already billing this user? ─────────────────────────────
+    // A Play plan that renews keeps charging on its own. Selling a website month
+    // on top of it would take the row over (activation overwrites it), Play would
+    // keep billing a plan we no longer listen to, and its next renewal would
+    // flip the plan back. So the website cannot change such a plan at all: it is
+    // changed in the app (Upgrade / Downgrade), or renewal is cancelled in Play
+    // first. A Play plan the user has already cancelled does not renew, so it is
+    // not in the way and the purchase goes through.
+    //
+    // Our copy of "renews" is only as fresh as the last notification, and a user
+    // who cancelled in Play a moment ago and came straight here would be told to
+    // cancel what they just cancelled. So a row that looks like it renews is
+    // checked with Play before the order is refused (playRowStillRenews). That
+    // also covers a plan in Play's grace period, which is past its endDate here
+    // but is still being retried by Play.
+    //
+    // 409, not 403: a 403 from create-order means "finish your business profile"
+    // to both clients, and a 401 would sign the user out.
+    const currentSubscription = await Subscription.findOne({ userId });
+    if (isPossiblyBillingPlaySubscription(currentSubscription) && await playRowStillRenews(currentSubscription)) {
+        throw new ApiError(
+            409,
+            'Your plan is billed through Google Play and renews automatically. Change it in the Android app, or cancel renewal in Google Play first.'
+        );
+    }
 
     const cashfreeOrderId = generateCashfreeOrderId();
     const FRONTEND_URL = process.env.FRONTEND_URL || 'https://findernate.com';
@@ -256,7 +300,7 @@ export const verifySubscriptionPayment = asyncHandler(async (req, res) => {
     // All of the real checks — amount paid, plan bought, who paid, replay —
     // live in activateSubscriptionForOrder and run against the Cashfree order,
     // not the request body.
-    const { plan: activatedPlan, subscription, business, alreadyApplied } =
+    const { plan: activatedPlan, subscription, business, alreadyApplied, previousEntitledPlan } =
         await activateSubscriptionForOrder({
             cfOrder,
             cfPaymentId,
@@ -274,7 +318,7 @@ export const verifySubscriptionPayment = asyncHandler(async (req, res) => {
 
     res.status(200).json(
         new ApiResponse(200, {
-            subscription,
+            subscription: toPublicSubscription(subscription),
             business: { plan: businessDoc?.plan, subscriptionStatus: businessDoc?.subscriptionStatus },
             tier: activatedPlan,
             features: {
@@ -285,9 +329,12 @@ export const verifySubscriptionPayment = asyncHandler(async (req, res) => {
                     unlimited: hasCallingAccess
                 }
             },
-            message: alreadyApplied
-                ? `Your ${SUBSCRIPTION_PLANS[activatedPlan].name} plan is already active.`
-                : `Successfully upgraded to ${SUBSCRIPTION_PLANS[activatedPlan].name} plan!`,
+            message: planChangeMessage({
+                planName: SUBSCRIPTION_PLANS[activatedPlan].name,
+                plan: activatedPlan,
+                previousPlan: previousEntitledPlan,
+                alreadyApplied
+            }),
             paymentId: cfPaymentId
         }, 'Subscription activated successfully')
     );
