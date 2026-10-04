@@ -29,4 +29,7 @@ const LikeSchema = new mongoose.Schema({
 LikeSchema.index({ userId: 1, postId: 1 }, { unique: true, partialFilterExpression: { postId: { $type: "objectId" } } });
 LikeSchema.index({ userId: 1, commentId: 1 }, { unique: true, partialFilterExpression: { commentId: { $type: "objectId" } } });
 
+// Business Insights: likes received on a set of posts within a date window.
+LikeSchema.index({ postId: 1, createdAt: -1 });
+
 export default mongoose.model('Like', LikeSchema);

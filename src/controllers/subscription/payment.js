@@ -17,7 +17,7 @@ import {
     ErrorLogger,
     MetricsCollector
 } from '../../utils/monitoring.utils.js';
-import { SUBSCRIPTION_PLANS } from './plans.js';
+import { SUBSCRIPTION_PLANS, isPlanComingSoon } from './plans.js';
 // The renewal arithmetic, the Business-plan mapping, the cache sweep and the
 // redemption guard now live in activation.js and are shared with the Google
 // Play path — the same "keep it as one definition" rule the Razorpay drift
@@ -125,7 +125,10 @@ const activateSubscriptionForOrder = async ({ cfOrder, cfPaymentId, expectedUser
         startDate: stillRunningSamePlan ? (subscription.startDate || now) : now,
         endDate: addOneMonth(stillRunningSamePlan ? subscription.endDate : now),
         paymentId: cfPaymentId,
-        source: 'cashfree'
+        source: 'cashfree',
+        // A website payment buys one month and has no recurring mandate, so it
+        // must not claim to auto-renew (that would be shown to the user).
+        autoRenew: false
     });
 
     return { user, plan, subscription: saved, business, alreadyApplied: false };
@@ -138,6 +141,15 @@ export const createSubscriptionOrder = asyncHandler(async (req, res) => {
     const validPaidPlans = ['small_business', 'corporate'];
     if (!plan || !validPaidPlans.includes(plan)) {
         throw new ApiError(400, `Invalid plan. Must be one of: ${validPaidPlans.join(', ')}`);
+    }
+
+    // A plan the owner is holding back (PLANS_COMING_SOON) cannot be bought, even
+    // by an older client that still shows a Subscribe button. Verification of an
+    // order that was already paid is deliberately NOT blocked.
+    if (isPlanComingSoon(plan)) {
+        // 409, not 403: a 403 from create-order means "finish your business profile"
+        // to both clients, which is not what this is.
+        throw new ApiError(409, `The ${SUBSCRIPTION_PLANS[plan].name} plan is not open for purchase yet.`);
     }
 
     const user = await User.findById(userId);

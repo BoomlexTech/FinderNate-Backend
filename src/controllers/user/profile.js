@@ -114,7 +114,7 @@ const getUserProfile = asyncHandler(async (req, res) => {
             isVerified: settingsUser.isBusinessProfile ? (businessInfo?.isVerified ?? false) : null,
             isContentVisible: settingsUser.isBusinessProfile ? isContentVisible : true,
             contentVisibilityMessage: settingsUser.isBusinessProfile && !isContentVisible
-                ? 'Content is currently hidden. Activate your payment plan to make posts visible.'
+                ? 'Your product, service and business listings are not promoted until you upgrade.'
                 : null,
         };
     };
@@ -408,7 +408,7 @@ const getOtherUserProfile = asyncHandler(async (req, res) => {
         isPhoneVerified: targetUser.isPhoneVerified,
         isContentVisible: targetUser.isBusinessProfile ? isContentVisible : true,
         contentVisibilityMessage: targetUser.isBusinessProfile && !isContentVisible
-            ? 'Content is currently hidden. Activate your payment plan to make posts visible.'
+            ? 'Product, service and business listings are not promoted until this business upgrades.'
             : null,
         subscriptionBadge: subscriptionBadge,
         bio: targetUser.bio || "",

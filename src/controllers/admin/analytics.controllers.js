@@ -1,6 +1,8 @@
 import { User } from "../../models/user.models.js";
 import Business from "../../models/business.models.js";
 import Report from "../../models/report.models.js";
+import Feedback from "../../models/feedback.models.js";
+import { UNASSIGNED_MANAGER_FILTER } from "../../utils/accountManager.utils.js";
 import { ApiError } from "../../utils/ApiError.js";
 import { ApiResponse } from "../../utils/ApiResponse.js";
 import { asyncHandler } from "../../utils/asyncHandler.js";
@@ -19,7 +21,9 @@ export const getDashboardStats = asyncHandler(async (req, res) => {
         pendingAadhaarVerifications,
         pendingBusinessVerifications,
         activeUsers,
-        verifiedBusinesses
+        verifiedBusinesses,
+        openSupportRequests,
+        corporateAwaitingManager
     ] = await Promise.all([
         // Soft-deleted accounts are excluded. Nothing else in the platform
         // treats an isDeleted user as a user — the auth guard rejects them and
@@ -54,7 +58,11 @@ export const getDashboardStats = asyncHandler(async (req, res) => {
         // Same exclusion as totalUsers — a deleted account is not an active one,
         // and without this activeUsers could exceed the total it is a subset of.
         User.countDocuments({ accountStatus: 'active', isDeleted: { $ne: true } }),
-        Business.countDocuments({ isVerified: true })
+        Business.countDocuments({ isVerified: true }),
+        // Support requests still waiting for a first reply.
+        Feedback.countDocuments({ status: 'open' }),
+        // Corporate subscribers nobody has been assigned to yet.
+        Business.countDocuments({ plan: 'plan3', ...UNASSIGNED_MANAGER_FILTER })
     ]);
 
     const thirtyDaysAgo = new Date();
@@ -78,7 +86,9 @@ export const getDashboardStats = asyncHandler(async (req, res) => {
             pending: {
                 reports: pendingReports,
                 aadhaarVerifications: pendingAadhaarVerifications,
-                businessVerifications: pendingBusinessVerifications
+                businessVerifications: pendingBusinessVerifications,
+                support: openSupportRequests,
+                corporateAwaitingManager
             },
             recent: {
                 newUsers,

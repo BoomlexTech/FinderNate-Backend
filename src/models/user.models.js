@@ -1,6 +1,7 @@
 import mongoose from "mongoose";
 import jwt from "jsonwebtoken";
 import bcrypt from "bcrypt";
+import { badgeForPlan } from "../constants/subscriptionBadges.js";
 
 const UserSchema = new mongoose.Schema({
     uid: { type: String, required: true, unique: true },
@@ -260,23 +261,7 @@ UserSchema.methods.getSubscriptionBadge = async function () {
         return null; // No badge for free users
     }
 
-    // Return badge based on subscription plan
-    const badgeMap = {
-        small_business: {
-            type: 'small_business',
-            label: 'Small Business',
-            color: '#22C55E', // green tick
-            isPaid: true
-        },
-        corporate: {
-            type: 'corporate',
-            label: 'Corporate',
-            color: '#3B82F6', // blue tick
-            isPaid: true
-        }
-    };
-
-    return badgeMap[subscription.plan] || null;
+    return badgeForPlan(subscription.plan);
 };
 
 

@@ -10,6 +10,7 @@ import { addBadgesToNestedUsers, addBadgesToUsers } from "../utils/userBadge.uti
 import { filterBusinessPostsByPaymentPlan } from "../utils/businessPlan.utils.js";
 import { batchIsLikedByUser, batchGetLikedByUsers, batchGetLikesCount, batchSharedCount } from "../utils/postEngagement.utils.js";
 import { getLikedByPreview } from "../utils/likedByPreview.utils.js";
+import { getLiveBoosts, isCorporateBusinessPlan, orderPaidForExplore, recordBoostImpressions } from "../utils/boostServing.js";
 import mongoose from "mongoose";
 
 export const getExploreFeed = asyncHandler(async (req, res) => {
@@ -64,8 +65,18 @@ export const getExploreFeed = asyncHandler(async (req, res) => {
     // 2. Get posts using reliable find() method like homeFeed (not aggregation)
     const EXPLORE_LIMIT = 100;
 
+    // Get active payment plan user IDs
+    const activePaymentPlanUserIds = await Business.find({
+        subscriptionStatus: 'active',
+        plan: { $ne: 'plan1' }
+    }).select('userId plan').lean();
+    const activePlanUserIdsSet = new Set(activePaymentPlanUserIds.map(b => b.userId.toString()));
+    const paidPlanByUserId = new Map(activePaymentPlanUserIds.map(b => [b.userId.toString(), b.plan]));
+
+    const liveBoosts = await getLiveBoosts(paidPlanByUserId);
+
     // Get all posts matching the criteria using the same reliable approach as homeFeed (excluding blocked users and respecting privacy)
-    const allPosts = await Post.find({
+    const recentPosts = await Post.find({
         ...postMatch,
         userId: { $in: viewableUserIds, $nin: blockedUsers },
         'settings.privacy': { $ne: 'private' }  // Never show private posts in public feeds
@@ -75,20 +86,33 @@ export const getExploreFeed = asyncHandler(async (req, res) => {
         .populate('userId', 'username profileImageUrl')
         .select('-analytics -__v -settings.customAudience');
 
+    // A boost on a post older than the newest EXPLORE_LIMIT would never reach the
+    // candidate list above, so fetch those under the same visibility rules.
+    const recentPostIds = new Set(recentPosts.map(post => post._id.toString()));
+    const olderBoostedIds = liveBoosts.map(boost => boost.postId).filter(id => !recentPostIds.has(id));
+    const olderBoostedPosts = olderBoostedIds.length === 0 ? [] : await Post.find({
+        ...postMatch,
+        _id: { $in: olderBoostedIds },
+        userId: { $in: viewableUserIds, $nin: blockedUsers },
+        'settings.privacy': { $ne: 'private' }
+    })
+        .populate('userId', 'username profileImageUrl')
+        .select('-analytics -__v -settings.customAudience');
+    const allPosts = [...recentPosts, ...olderBoostedPosts];
+
     // Filter out unpaid business posts
     const filteredPosts = await filterBusinessPostsByPaymentPlan(allPosts);
 
     // Separate paid business posts and regular posts for interspersing
     const paidBusinessPosts = [];
     const regularPosts = [];
-    
-    // Get active payment plan user IDs
-    const activePaymentPlanUserIds = await Business.find({
-        subscriptionStatus: 'active',
-        plan: { $ne: 'plan1' }
-    }).select('userId').lean();
-    const activePlanUserIdsSet = new Set(activePaymentPlanUserIds.map(b => b.userId.toString()));
-    
+
+    const authorIdOf = (post) => (post.userId?._id || post.userId)?.toString();
+    const boostWeightByPostId = new Map(liveBoosts.map(boost => [boost.postId, boost.weight]));
+    // Boosted posts that are actually in the paid bucket below. A post reported
+    // since its boost started no longer counts.
+    const promotedPostIds = new Set();
+
     // Get business user IDs
     const businessUsers = await User.find({ isBusinessProfile: true }).select('_id').lean();
     const businessUserIdsSet = new Set(businessUsers.map(u => u._id.toString()));
@@ -101,6 +125,8 @@ export const getExploreFeed = asyncHandler(async (req, res) => {
         
         if (isBusiness && hasActivePlan) {
             paidBusinessPosts.push(post);
+            const postIdStr = post._id.toString();
+            if (post.isReported !== true && boostWeightByPostId.has(postIdStr)) promotedPostIds.add(postIdStr);
         } else {
             regularPosts.push(post);
         }
@@ -115,7 +141,13 @@ export const getExploreFeed = asyncHandler(async (req, res) => {
     }
 
     const shuffledRegularPosts = shuffleArray(regularPosts);
-    const shuffledPaidBusinessPosts = shuffleArray(paidBusinessPosts);
+    // Paid-author posts take 1 of every 5 slots below, in this order: boosted
+    // posts (Corporate boosts first), then the rest of Corporate, then Small
+    // Business. Boosted posts can therefore never take more than those slots.
+    const shuffledPaidBusinessPosts = orderPaidForExplore(paidBusinessPosts, {
+        boostWeightOf: (post) => promotedPostIds.has(post._id.toString()) ? boostWeightByPostId.get(post._id.toString()) : 0,
+        isCorporateOf: (post) => isCorporateBusinessPlan(paidPlanByUserId.get(authorIdOf(post)))
+    }, shuffleArray);
 
     // Intersperse paid business posts between regular posts
     // Insert 1 paid business post every 3-5 regular posts
@@ -171,6 +203,13 @@ export const getExploreFeed = asyncHandler(async (req, res) => {
     const skip = (page - 1) * limit;
     const take = limit;
     posts = posts.slice(skip, skip + take);
+
+    recordBoostImpressions(
+        posts
+            .filter(post => promotedPostIds.has(post._id.toString()))
+            .map(post => ({ postId: post._id, authorId: authorIdOf(post) })),
+        viewerId
+    );
 
     // Handle reel user details (reels need separate user fetching)
     if (reels.length > 0) {
@@ -343,6 +382,7 @@ export const getExploreFeed = asyncHandler(async (req, res) => {
                     shares: sharedCountMap.get(idStr) ?? item.engagement?.shares ?? 0
                 },
                 isLikedBy: currentUserId ? likedSet.has(idStr) : false,
+                isPromoted: promotedPostIds.has(idStr),
                 likedBy: likedByUsers,
                 likedByPreview: preview.likedByText ? { text: preview.likedByText, previewUser: preview.previewUser, othersCount: preview.othersCount } : null,
             };

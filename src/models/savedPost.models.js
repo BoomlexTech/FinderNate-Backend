@@ -23,4 +23,7 @@ const SavedPostSchema = new mongoose.Schema({
 // 🛡 Prevent saving the same post multiple times by same user
 SavedPostSchema.index({ userId: 1, postId: 1 }, { unique: true });
 
+// Business Insights: saves received on a set of posts within a date window.
+SavedPostSchema.index({ postId: 1, createdAt: -1 });
+
 export default mongoose.model('SavedPost', SavedPostSchema);

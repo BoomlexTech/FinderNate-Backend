@@ -47,4 +47,7 @@ const CommentSchema = new mongoose.Schema({
     }
 }, { timestamps: true });
 
+// Business Insights: comments received on a set of posts within a date window.
+CommentSchema.index({ postId: 1, createdAt: -1 });
+
 export default mongoose.model('Comment', CommentSchema);

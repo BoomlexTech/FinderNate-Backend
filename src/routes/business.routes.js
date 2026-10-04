@@ -2,6 +2,7 @@ import { Router } from "express";
 import { verifyJWT, optionalVerifyJWT } from "../middlewares/auth.middleware.js";
 import { verifyAdminJWT } from "../middlewares/adminAuth.middleware.js";
 import { upload } from "../middlewares/multerConfig.js";
+import { generalRateLimit } from "../middlewares/rateLimiter.middleware.js";
 import {
     switchTobusinessprofile,
     switchToPersonalAccount,
@@ -25,7 +26,10 @@ import {
     uploadVerificationDocument,
     addOrUpdateBankDetails,
     getBankDetails,
-    deleteBankDetails
+    deleteBankDetails,
+    getBusinessInsights,
+    getBusinessInsightsPosts,
+    exportBusinessInsights
 } from "../controllers/business.controllers.js";
 
 const router = Router();
@@ -66,6 +70,11 @@ router.route("/categories").get(getBusinessCategories);
 
 // Get my business category (auth required) - Must be before /:id route
 router.route("/my-category").get(verifyJWT, getMyBusinessCategory);
+
+// 📊 Insights - static paths, so they must stay above the /:id catch-all below
+router.route("/insights").get(verifyJWT, generalRateLimit, getBusinessInsights);
+router.route("/insights/posts").get(verifyJWT, generalRateLimit, getBusinessInsightsPosts);
+router.route("/insights/export").get(verifyJWT, generalRateLimit, exportBusinessInsights);
 
 // 📍 Live location endpoints
 router.route("/live-location").patch(verifyJWT, updateLiveLocation);

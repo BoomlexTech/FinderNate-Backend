@@ -1,7 +1,7 @@
 import cron from 'node-cron';
 import Subscription from '../models/subscription.models.js';
-import Business from '../models/business.models.js';
 import { User } from '../models/user.models.js';
+import { downgradeBusinessToFree } from '../controllers/subscription/activation.js';
 import { FeedCacheManager } from '../utils/cache.utils.js';
 import { redisClient } from '../config/redis.config.js';
 
@@ -84,11 +84,9 @@ export const handleExpiredSubscriptions = async () => {
                 subscription.status = 'expired';
                 await subscription.save();
 
-                // 2. Downgrade business profile to free plan (no-op if no Business doc)
-                await Business.updateOne(
-                    { userId },
-                    { $set: { plan: 'plan1', subscriptionStatus: 'pending' } }
-                );
+                // 2. Downgrade business profile to free plan (no-op if no Business
+                //    doc). The verified tick goes too, unless KYC approved it.
+                await downgradeBusinessToFree(userId);
 
                 // 3. Invalidate feed and profile caches (subscription badge changed on expiry)
                 try {

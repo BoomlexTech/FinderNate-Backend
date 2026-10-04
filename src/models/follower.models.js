@@ -18,4 +18,7 @@ const FollowerSchema = new mongoose.Schema({
 // 🚫 Prevent duplicate follower pairs
 FollowerSchema.index({ userId: 1, followerId: 1 }, { unique: true });
 
+// Business Insights: new followers within a date window.
+FollowerSchema.index({ userId: 1, createdAt: -1 });
+
 export default mongoose.model('Follower', FollowerSchema);

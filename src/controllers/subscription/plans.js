@@ -1,5 +1,6 @@
 import { asyncHandler } from '../../utils/asyncHandler.js';
 import { ApiResponse } from '../../utils/ApiResponse.js';
+import { PLAN_LIMITS } from '../../utils/planLimits.js';
 
 export const SUBSCRIPTION_PLANS = {
     free: {
@@ -11,13 +12,13 @@ export const SUBSCRIPTION_PLANS = {
     small_business: {
         id: 'small_business',
         name: 'Small Business',
-        price: 1,
+        price: 19,
         duration: 'monthly'
     },
     corporate: {
         id: 'corporate',
         name: 'Corporate',
-        price: 2999,
+        price: 999,
         duration: 'monthly'
     }
 };
@@ -43,8 +44,34 @@ export const PLAN_TO_PLAY_PRODUCT = Object.fromEntries(
     Object.entries(PLAY_PRODUCT_TO_PLAN).map(([productId, plan]) => [plan, productId])
 );
 
-export const getAvailablePlans = asyncHandler(async (req, res) => {
-    const plans = [
+/**
+ * Plans the owner has chosen to hold back without an app release.
+ *
+ * PLANS_COMING_SOON is a comma separated list of plan ids (e.g. "corporate").
+ * A plan listed there is sent to clients with `comingSoon: true`, so the app and
+ * website show "Coming soon" instead of a Subscribe button, and the purchase
+ * endpoints refuse it (see assertPlanPurchasable) so a stale client cannot buy it.
+ */
+export const getComingSoonPlans = () =>
+    String(process.env.PLANS_COMING_SOON || '')
+        .split(',')
+        .map((id) => id.trim())
+        .filter(Boolean);
+
+export const isPlanComingSoon = (planId) => getComingSoonPlans().includes(planId);
+
+/**
+ * The one list of what each plan includes. Every bullet here is either enforced
+ * by code or delivered by a feature that ships with it; the numbers are read
+ * from PLAN_LIMITS so the copy and the enforcement cannot disagree. The app
+ * renders this list as-is; the website renders it too (GET /subscription/plans).
+ */
+const buildPlanCatalog = () => {
+    const free = PLAN_LIMITS.free;
+    const small = PLAN_LIMITS.small_business;
+    const corp = PLAN_LIMITS.corporate;
+
+    return [
         {
             id: 'free',
             name: 'Free',
@@ -52,50 +79,61 @@ export const getAvailablePlans = asyncHandler(async (req, res) => {
             period: 'Forever',
             features: [
                 'Basic business profile',
-                'Up to 10 posts per month',
-                'Basic analytics',
-                'Community support'
+                `Up to ${free.postsPerMonth} posts per month`,
+                `Product catalog (up to ${free.productCatalog} items)`,
+                `Basic insights: followers, likes and comments for the last ${free.insightsMaxDays} days`,
+                'Help Center and email support'
             ],
             limitations: [
-                'Limited posts',
-                'Basic features only',
-                'No priority support'
+                'No audio or video calling',
+                'Product, service and business posts are not shown in Explore or Search',
+                'Standard support queue'
             ],
             isCurrentPlan: true
         },
         {
             id: 'small_business',
             name: 'Small Business',
-            price: '₹1',
+            price: `₹${SUBSCRIPTION_PLANS.small_business.price}`,
             period: 'per month',
             features: [
-                'Enhanced business profile',
+                'Verified business badge',
+                'Audio and video calling',
+                'Product, service and business posts promoted in Explore, Search and the home feed',
                 'Unlimited posts',
-                'Advanced analytics',
-                'Product catalog (up to 50 items)',
-                'Priority support',
-                'Basic advertising tools'
+                `Product catalog (up to ${small.productCatalog} items)`,
+                `Advanced analytics: ${small.insightsMaxDays}-day trends, per-post performance and enquiries`,
+                'Priority support: answered ahead of standard requests',
+                `Boost ${small.boost.maxConcurrent} post at a time (${small.boost.maxDays} days)`
             ],
             recommended: true
         },
         {
             id: 'corporate',
             name: 'Corporate',
-            price: '₹2999',
+            price: `₹${SUBSCRIPTION_PLANS.corporate.price}`,
             period: 'per month',
             features: [
-                'Premium business profile',
-                'Unlimited everything',
-                'Advanced analytics & insights',
+                'Everything in Small Business',
+                'Corporate badge and placement above Small Business accounts',
                 'Unlimited product catalog',
-                'Dedicated account manager',
-                'Advanced advertising & promotion',
-                'API access',
-                'White-label options'
+                `Advanced analytics & insights: ${corp.insightsMaxDays}-day history, period comparisons, best time to post and CSV export`,
+                `Boost up to ${corp.boost.maxConcurrent} posts at once, schedule campaigns and get performance reports`,
+                'Dedicated account manager'
             ],
             recommended: false
         }
     ];
+};
+
+export const getAvailablePlans = asyncHandler(async (req, res) => {
+    const holdBack = new Set(getComingSoonPlans());
+
+    const plans = buildPlanCatalog().map((plan) => ({
+        ...plan,
+        currency: 'INR',
+        comingSoon: plan.id !== 'free' && holdBack.has(plan.id)
+    }));
 
     res.status(200).json(
         new ApiResponse(200, { plans }, 'Available plans fetched successfully')

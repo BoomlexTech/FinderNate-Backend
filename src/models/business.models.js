@@ -140,6 +140,19 @@ const BusinessSchema = new mongoose.Schema({
         allowServicePosts: { type: Boolean, default: true }
     },
 
+    // The named contact a Corporate subscriber is promised. Contact details are
+    // copied in rather than referenced, so the manager need not be an Admin user;
+    // adminId is only set when they are.
+    accountManager: {
+        adminId: { type: mongoose.Schema.Types.ObjectId, ref: 'Admin' },
+        name: { type: String, trim: true },
+        email: { type: String, trim: true, lowercase: true },
+        phone: { type: String, trim: true },
+        hours: { type: String, trim: true },
+        assignedAt: { type: Date },
+        assignedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Admin' }
+    },
+
     // Flag to track if business profile is fully created (one-time creation)
     isProfileCompleted: { type: Boolean, default: false }
 }, { timestamps: true });

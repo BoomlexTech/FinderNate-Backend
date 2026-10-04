@@ -11,6 +11,12 @@ import { addBadgesToNestedUsers, addBadgesToUsers } from '../utils/userBadge.uti
 import { batchIsLikedByUser, batchGetLikedByUsers, batchGetLikesCount,batchSharedCount } from '../utils/postEngagement.utils.js';
 import { getLikedByPreview } from '../utils/likedByPreview.utils.js';
 import { getFollowingIdSet, getPendingFollowRequestIdSet } from '../utils/followEngagement.utils.js';
+import {
+    BOOST_SEARCH_BONUS_PER_WEIGHT,
+    CORPORATE_SEARCH_BONUS,
+    getLiveBoosts,
+    isCorporateBusinessPlan
+} from '../utils/boostServing.js';
 
 export const searchAllContent = async (req, res) => {
     try {
@@ -318,8 +324,16 @@ export const searchAllContent = async (req, res) => {
         const activePaymentPlanUserIds = await Business.find({
             subscriptionStatus: 'active',
             plan: { $ne: 'plan1' }
-        }).select('userId').lean();
+        }).select('userId plan').lean();
         const activePlanUserIdsSet = new Set(activePaymentPlanUserIds.map(b => b.userId.toString()));
+        const paidPlanByUserId = new Map(activePaymentPlanUserIds.map(b => [b.userId.toString(), b.plan]));
+
+        // Boosts only lift a post that already matched the query, and only inside
+        // its relevance band below. Search is cached for 15 minutes, so a boost
+        // starting or ending shows up late here.
+        const boostWeightByPostId = new Map(
+            (await getLiveBoosts(paidPlanByUserId)).map(boost => [boost.postId, boost.weight])
+        );
 
         const businessUsers = await User.find({ isBusinessProfile: true }).select('_id').lean();
         const businessUserIdsSet = new Set(businessUsers.map(u => u._id.toString()));
@@ -434,10 +448,20 @@ export const searchAllContent = async (req, res) => {
             // Boost score for paid business posts
             if (isBusiness && hasActivePlan) {
                 base += 2.0; // Significant boost for paid business posts
+                if (isCorporateBusinessPlan(paidPlanByUserId.get(userIdStr))) {
+                    base += CORPORATE_SEARCH_BONUS; // Corporate above Small Business
+                }
             }
+
+            // A boosted post that has not been reported since the boost started.
+            const boostWeight = isBusiness && hasActivePlan && post.isReported !== true
+                ? (boostWeightByPostId.get(String(post._id)) || 0)
+                : 0;
+            base += boostWeight * BOOST_SEARCH_BONUS_PER_WEIGHT;
 
             return {
                 ...post,
+                isPromoted: boostWeight > 0,
                 _relevance: postRelevance(post),
                 _score: base + score + (new Date(post.createdAt).getTime() / 10000000000000),
                 _type: 'post'

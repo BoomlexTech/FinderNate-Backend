@@ -134,6 +134,14 @@ export const reportContent = asyncHandler(async (req, res) => {
                 { ...deleteFilter, status: 'pending' },
                 { status: 'under_review' }
             );
+
+            // An escalated post is marked reported until a reviewer clears it, so a
+            // post that is under review is not boosted or promoted in the meantime.
+            // Only the escalation sets it: one report alone must not be able to
+            // switch off somebody's boost.
+            if (type === 'post' || type === 'reel') {
+                await Post.updateOne({ _id: contentId }, { $set: { isReported: true, reportCount } });
+            }
         }
 
         return res

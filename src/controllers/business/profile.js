@@ -7,6 +7,7 @@ import { asyncHandler } from "../../utils/asyncHandler.js";
 import { getCoordinates } from "../../utils/getCoordinates.js";
 import mongoose from "mongoose";
 import { BUSINESS_CATEGORIES, extractTagsFromText } from "./helpers.js";
+import { cancelBoostsForPost } from "../../utils/boostServing.js";
 
 // Canonical forms of the two statutory identity numbers: GSTIN is 15 uppercase
 // alphanumerics, Aadhaar is 12 digits, and neither contains a space.
@@ -283,7 +284,7 @@ export const getBusinessProfile = asyncHandler(async (req, res) => {
                 isContentVisible,
                 message: isContentVisible
                     ? 'Your business content is visible to all users'
-                    : 'Your business content is currently hidden. Activate your payment plan to make it visible.'
+                    : 'Your product, service and business listings are not promoted until you upgrade.'
             }
         }, "Business profile fetched successfully")
     );
@@ -313,6 +314,9 @@ const stripPrivateBusinessFields = (business) => {
     delete publicBusiness.aadhaarNumber;
     delete publicBusiness.bankDetails;
     delete publicBusiness.documents;
+    // The account manager is a private arrangement with a Corporate customer: their
+    // name, contact details and the admin ids behind them are for that business only.
+    delete publicBusiness.accountManager;
 
     if (publicBusiness.contact) {
         const publicContact = { ...publicBusiness.contact };
@@ -380,7 +384,7 @@ export const getBusinessById = asyncHandler(async (req, res) => {
                 isContentVisible,
                 message: isContentVisible
                     ? 'Business content is visible'
-                    : 'Business content is currently hidden due to inactive payment plan'
+                    : 'Product, service and business listings are not promoted until this business upgrades.'
             }
         }, "Business profile fetched successfully")
     );
@@ -715,6 +719,7 @@ export const deleteBusinessProfile = asyncHandler(async (req, res) => {
     if (postIds.length) {
         await Promise.allSettled([
             Like.deleteMany({ postId: { $in: postIds } }),
+            cancelBoostsForPost(postIds),
             Comment.deleteMany({ postId: { $in: postIds } }),
             SavedPost.deleteMany({ postId: { $in: postIds } }),
             PostInteraction.deleteMany({ postId: { $in: postIds } }),

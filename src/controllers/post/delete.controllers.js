@@ -13,6 +13,7 @@ import Order from "../../models/order.models.js";
 import PaymentLink from "../../models/paymentLink.models.js";
 import { deleteMultipleFromBunny, deleteFromBunny } from "../../utils/bunny.js";
 import { invalidatePostCaches } from "./helpers.js";
+import { cancelBoostsForPost } from "../../utils/boostServing.js";
 
 /**
  * A post whose money is still in flight cannot be deleted.
@@ -106,6 +107,7 @@ export const deletePost = asyncHandler(async (req, res) => {
     await Promise.allSettled([
         Like.deleteMany({ postId: id }),
         cancelPaymentLinksForPost(id),
+        cancelBoostsForPost(id),
         // Comment.deleteMany({ postId: id }),
         // SavedPost.deleteMany({ postId: id })
     ]);
@@ -302,6 +304,7 @@ export const deleteContent = asyncHandler(async (req, res) => {
                 PostInteraction.deleteMany({ postId: postId }),
                 Report.deleteMany({ reportedPostId: postId }),
                 cancelPaymentLinksForPost(postId),
+                cancelBoostsForPost(postId),
             ]);
 
             await invalidatePostCaches(postId, userId);

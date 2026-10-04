@@ -1,5 +1,22 @@
 # Calling Features Implementation - Paid vs Free Users
 
+> **Current behaviour (this supersedes any older example below).**
+> - Plan ids are `free`, `small_business` and `corporate`. Calling is included in
+>   **both** paid plans; the Free plan has no audio or video calling.
+> - **Placing** a call (`POST /calls/initiate`) needs an active paid subscription
+>   (status `active`, `endDate` in the future), checked by `verifyCallingAccess` in
+>   `src/middlewares/subscription.middleware.js`. A business profile does **not**
+>   get calling for free: it needs the same paid subscription as anyone else.
+> - Accepting, declining and ending a call are not gated, so a paid account can
+>   always be answered by a Free customer and anyone can hang up.
+> - What each plan includes (and its price) lives in one place: `buildPlanCatalog()`
+>   and `SUBSCRIPTION_PLANS` in `src/controllers/subscription/plans.js`, served by
+>   `GET /api/v1/subscription/plans`. Do not copy those lists into this document.
+> - The sections below are the original implementation notes. Where they mention
+>   `basic` / `pro` / `premium` / `business` tiers, dollar prices, an
+>   `/upgrade-prompt` endpoint or automatic calling for business profiles, they are
+>   out of date.
+
 ## Overview
 This implementation adds subscription-based access control for calling features, restricting free users from accessing audio and video calls while granting unlimited access to paid users and business profiles.
 
@@ -10,16 +27,14 @@ This implementation adds subscription-based access control for calling features,
 - ❌ **Cannot access video calls**
 - ✅ **Receive upgrade prompt when attempting to use call features**
 
-### 2. Paid Users (Basic, Pro, Premium)
-- ✅ **Unlimited audio calls**
-- ✅ **Unlimited video calls**
+### 2. Paid Users (Small Business, Corporate)
+- ✅ **Audio calls**
+- ✅ **Video calls**
 - ✅ **Full calling feature access**
 
 ### 3. Business Users
-- ✅ **Unlimited audio calls**
-- ✅ **Unlimited video calls**
-- ✅ **Full calling feature access**
-- ✅ **Automatic access without subscription check**
+- Business accounts follow the same rule as everyone else: calling needs an active
+  Small Business or Corporate subscription. There is no automatic access.
 
 ## Files Modified/Created
 
@@ -31,9 +46,9 @@ Added helper methods:
 - `getSubscriptionTier()` - Returns user's subscription tier
 
 ```javascript
-// Business profiles always have calling access
-// Paid users (basic, pro, premium, business) have calling access
-// Free users don't have calling access
+// Historical note: this helper (UserSchema.methods.hasCallingAccess) is not used by
+// the call routes. The real gate is verifyCallingAccess in
+// subscription.middleware.js: an active small_business or corporate subscription.
 ```
 
 ### 2. Subscription Middleware
@@ -50,7 +65,7 @@ The error response for free users includes:
   "errorCode": "CALLING_FEATURE_RESTRICTED",
   "subscriptionTier": "free",
   "requiresUpgrade": true,
-  "availablePlans": ["basic", "pro", "premium", "business"]
+  "availablePlans": ["small_business", "corporate"]
 }
 ```
 
@@ -59,7 +74,7 @@ The error response for free users includes:
 
 Implemented endpoints:
 - `GET /api/v1/subscription/status` - Get current subscription status
-- `GET /api/v1/subscription/upgrade-prompt` - Get upgrade prompt with plan details
+- ~~`GET /api/v1/subscription/upgrade-prompt`~~ - removed; it is no longer routed
 - `GET /api/v1/subscription/feature/:feature/access` - Check feature access
 - `GET /api/v1/subscription/plans` - Get all available plans
 
@@ -73,11 +88,11 @@ Registered subscription endpoints with JWT authentication.
 
 Updated routes to include access control:
 ```javascript
-// Restricted to paid users only
+// Placing a call needs an active paid plan
 router.post('/initiate', verifyCallingAccess, initiateCall);
-router.patch('/:callId/accept', verifyCallingAccess, acceptCall);
 
-// No restriction (users can decline/end calls even if free)
+// No restriction (a free user can answer a paid account, and anyone can decline/end)
+router.patch('/:callId/accept', acceptCall);
 router.patch('/:callId/decline', declineCall);
 router.patch('/:callId/end', endCall);
 
@@ -112,11 +127,11 @@ Response:
   "data": {
     "subscription": {
       "userId": "...",
-      "plan": "pro",
+      "plan": "small_business",
       "status": "active",
       "endDate": "2026-02-15T00:00:00.000Z"
     },
-    "tier": "pro",
+    "tier": "small_business",
     "isBusinessProfile": false,
     "features": {
       "calling": {
@@ -130,51 +145,9 @@ Response:
 }
 ```
 
-#### 2. Get Upgrade Prompt
-```
-GET /api/v1/subscription/upgrade-prompt?feature=calling
-Authorization: Bearer <token>
-```
-
-Response for free users:
-```json
-{
-  "success": true,
-  "data": {
-    "requiresUpgrade": true,
-    "currentTier": "free",
-    "hasAccess": false,
-    "feature": "calling",
-    "title": "Upgrade to unlock calling features",
-    "message": "Audio and video calls are available for paid subscribers. Choose a plan to start calling your connections.",
-    "benefits": [
-      "Unlimited audio calls",
-      "Unlimited video calls",
-      "High-quality voice and video",
-      "Group calling (coming soon)"
-    ],
-    "availablePlans": [
-      {
-        "id": "basic",
-        "name": "Basic",
-        "price": "$4.99/month",
-        "features": [...],
-        "recommended": false
-      },
-      {
-        "id": "pro",
-        "name": "Pro",
-        "price": "$9.99/month",
-        "features": [...],
-        "recommended": true
-      },
-      // ... more plans
-    ],
-    "ctaText": "Upgrade Now",
-    "ctaUrl": "/subscription/upgrade"
-  }
-}
-```
+#### 2. Get Upgrade Prompt (removed)
+`GET /api/v1/subscription/upgrade-prompt` is no longer routed. Clients that need
+plan details call `GET /api/v1/subscription/plans`.
 
 #### 3. Check Feature Access
 ```
@@ -190,7 +163,7 @@ Response:
     "feature": "calling",
     "hasAccess": false,
     "currentTier": "free",
-    "requiredTier": "basic",
+    "requiredTier": "small_business",
     "isBusinessProfile": false,
     "requiresUpgrade": true
   }
@@ -212,15 +185,11 @@ Response:
       {
         "id": "free",
         "name": "Free",
-        "price": "$0/month",
+        "price": "₹0",
         "features": [...],
-        "limitations": [
-          "No audio calls",
-          "No video calls",
-          "Ads supported"
-        ]
+        "limitations": [...]
       },
-      // ... more plans
+      // ... more plans (the lists come from buildPlanCatalog() in plans.js)
     ]
   }
 }
@@ -250,7 +219,7 @@ Body:
     "errorCode": "CALLING_FEATURE_RESTRICTED",
     "subscriptionTier": "free",
     "requiresUpgrade": true,
-    "availablePlans": ["basic", "pro", "premium", "business"]
+    "availablePlans": ["small_business", "corporate"]
   }
 }
 ```
@@ -270,39 +239,15 @@ Body:
 
 ## Subscription Tiers
 
-### Free (Default)
-- No calling features
-- Basic profile features
-- Post updates
-- Follow users
-- Limited messaging
+The plans are `free`, `small_business` and `corporate`. Their prices and exactly
+what each one includes are defined in one place only:
+`src/controllers/subscription/plans.js` (`SUBSCRIPTION_PLANS` for the numeric
+price, `buildPlanCatalog()` for the feature and limitation lists, with the
+numeric limits read from `src/utils/planLimits.js`). The same data is served at
+`GET /api/v1/subscription/plans`.
 
-### Basic ($4.99/month)
-- ✅ Unlimited audio calls
-- ✅ Unlimited video calls
-- Ad-free experience
-- Priority support
-
-### Pro ($9.99/month) - Recommended
-- All Basic features
-- Advanced profile customization
-- Analytics dashboard
-- Blue tick verification
-- Early access to new features
-
-### Premium ($14.99/month)
-- All Pro features
-- Unlimited storage
-- Custom branding
-- API access
-- Dedicated account manager
-
-### Business ($29.99/month)
-- All Premium features
-- Business profile tools
-- Team collaboration
-- Advanced analytics
-- White-label options
+For calling specifically: Free has none; Small Business and Corporate both include
+audio and video calling.
 
 ## How It Works
 
@@ -314,17 +259,17 @@ Body:
 
 2. **Subscription Check** (for calling endpoints)
    - `verifyCallingAccess` middleware checks subscription
-   - Business profiles: ✅ Auto-approved
-   - Paid subscriptions: ✅ Check active subscription
-   - Free users: ❌ Blocked with upgrade prompt
+   - Active `small_business` or `corporate` subscription: ✅ Allowed
+   - Everyone else, including business profiles without a paid plan: ❌ Blocked
+     with a 403 `CALLING_FEATURE_RESTRICTED` response
 
-3. **Call Initiation/Accept**
-   - Only paid users and business profiles can initiate or accept calls
-   - Free users receive 403 error with upgrade information
+3. **Call Initiation**
+   - Only users with an active paid subscription can place a call
+   - Free users receive a 403 error with upgrade information
 
-4. **Call Decline/End**
-   - No restriction - all users can decline or end calls
-   - This allows free users to reject incoming calls
+4. **Call Accept/Decline/End**
+   - No restriction - all users can accept, decline or end calls
+   - This lets a paid account reach Free customers, and lets Free users reject calls
 
 ### Frontend Integration
 
@@ -337,8 +282,8 @@ try {
 } catch (error) {
   if (error.response?.data?.data?.errorCode === 'CALLING_FEATURE_RESTRICTED') {
     // Show upgrade prompt
-    const upgradeInfo = await fetch('/api/v1/subscription/upgrade-prompt?feature=calling');
-    showUpgradeModal(upgradeInfo);
+    const plans = await fetch('/api/v1/subscription/plans');
+    showUpgradeModal(plans);
   }
 }
 ```
@@ -351,7 +296,7 @@ try {
    - ❌ Should return 403 with upgrade prompt
 
 2. **Free User - Accept Call**
-   - ❌ Should return 403 with upgrade prompt
+   - ✅ Should work (no restriction)
 
 3. **Free User - Decline Call**
    - ✅ Should work (no restriction)
@@ -365,11 +310,11 @@ try {
 6. **Paid User - Accept Call**
    - ✅ Should accept call successfully
 
-7. **Business Profile - Initiate Call**
-   - ✅ Should work without subscription check
+7. **Business Profile on the Free plan - Initiate Call**
+   - ❌ Should return 403 (a business profile needs a paid plan to place calls)
 
-8. **Business Profile - Accept Call**
-   - ✅ Should work without subscription check
+8. **Business Profile on a paid plan - Initiate Call**
+   - ✅ Should create call successfully
 
 ## Database Schema
 
@@ -377,7 +322,7 @@ The existing `Subscription` model is used:
 ```javascript
 {
   userId: ObjectId,
-  plan: 'free' | 'basic' | 'pro' | 'premium' | 'business',
+  plan: 'free' | 'small_business' | 'corporate',
   status: 'active' | 'expired' | 'cancelled',
   startDate: Date,
   endDate: Date,
@@ -396,7 +341,7 @@ The existing `Subscription` model is used:
 ## Future Enhancements
 
 - [ ] Add group calling with tier-based participant limits
-- [ ] Add call duration limits for Small Business tier (if needed)
+- [ ] Add call duration limits per plan (if needed)
 - [ ] Add call quality settings based on subscription tier
 - [ ] Track calling usage/analytics per user
 - [ ] Add grace period for expired subscriptions
@@ -404,7 +349,7 @@ The existing `Subscription` model is used:
 
 ## Notes
 
-- Business profiles (`isBusinessProfile: true`) automatically have calling access without needing a subscription
+- Business profiles (`isBusinessProfile: true`) do not get calling automatically; they need an active Small Business or Corporate subscription like everyone else
 - Users can view their call history and stats regardless of subscription tier
 - Free users can still decline or end calls (important for UX)
 - The subscription check happens at the middleware level for clean separation of concerns

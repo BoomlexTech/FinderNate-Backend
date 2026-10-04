@@ -92,6 +92,9 @@ const stripPrivateBusinessFields = (business) => {
     delete publicBusiness.aadhaarNumber;
     delete publicBusiness.bankDetails;
     delete publicBusiness.documents;
+    // The account manager is a private arrangement with a Corporate customer: their
+    // name, contact details and the admin ids behind them are for that business only.
+    delete publicBusiness.accountManager;
 
     if (publicBusiness.contact) {
         const publicContact = { ...publicBusiness.contact };

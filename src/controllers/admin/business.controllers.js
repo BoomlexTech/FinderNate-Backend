@@ -1,8 +1,11 @@
+import mongoose from "mongoose";
 import Business from "../../models/business.models.js";
+import { Admin } from "../../models/admin.models.js";
 import { createBusinessVerificationNotification } from "../notification.controllers.js";
 import { ApiError } from "../../utils/ApiError.js";
 import { ApiResponse } from "../../utils/ApiResponse.js";
 import { asyncHandler } from "../../utils/asyncHandler.js";
+import { UNASSIGNED_MANAGER_FILTER, parseAccountManagerInput } from "../../utils/accountManager.utils.js";
 
 // GET /api/v1/admin/businesses
 export const getAllBusinesses = asyncHandler(async (req, res) => {
@@ -10,7 +13,7 @@ export const getAllBusinesses = asyncHandler(async (req, res) => {
         throw new ApiError(403, "Insufficient permissions to manage businesses");
     }
 
-    const { page = 1, limit = 20, search, isVerified, subscriptionStatus } = req.query;
+    const { page = 1, limit = 20, search, isVerified, subscriptionStatus, plan, unassigned } = req.query;
 
     let filter = {};
 
@@ -27,6 +30,18 @@ export const getAllBusinesses = asyncHandler(async (req, res) => {
 
     if (subscriptionStatus && ['active', 'inactive', 'pending'].includes(subscriptionStatus)) {
         filter.subscriptionStatus = subscriptionStatus;
+    }
+
+    if (['plan1', 'plan2', 'plan3'].includes(plan)) {
+        filter.plan = plan;
+    }
+
+    // "Corporate without a manager": Corporate accounts nobody has been assigned
+    // to yet. Keyed on the plan alone: subscriptionStatus is also flipped to
+    // 'pending' when a KYC review is rejected, which would drop a paying customer
+    // out of this list while their app still says "being assigned".
+    if (unassigned === 'true') {
+        Object.assign(filter, { plan: 'plan3' }, UNASSIGNED_MANAGER_FILTER);
     }
 
     const businesses = await Business.find(filter)
@@ -49,6 +64,51 @@ export const getAllBusinesses = asyncHandler(async (req, res) => {
                 hasPrev: page > 1
             }
         }, "Businesses fetched successfully")
+    );
+});
+
+// PUT /api/v1/admin/businesses/:businessId/account-manager
+export const assignAccountManager = asyncHandler(async (req, res) => {
+    const { businessId } = req.params;
+
+    if (!mongoose.isValidObjectId(businessId)) {
+        throw new ApiError(400, "Invalid business ID");
+    }
+
+    const { manager, error } = parseAccountManagerInput(req.body);
+    if (error) {
+        throw new ApiError(400, error);
+    }
+
+    const business = await Business.findById(businessId).select('businessName plan subscriptionStatus');
+    if (!business) {
+        throw new ApiError(404, "Business not found");
+    }
+
+    if (business.plan !== 'plan3') {
+        throw new ApiError(400, "An account manager can only be assigned to a Corporate subscriber");
+    }
+
+    const { adminId } = req.body;
+    if (adminId) {
+        if (!mongoose.isValidObjectId(adminId) || !(await Admin.exists({ _id: adminId }))) {
+            throw new ApiError(400, "Admin not found for the given adminId");
+        }
+        manager.adminId = adminId;
+    }
+
+    const accountManager = { ...manager, assignedAt: new Date(), assignedBy: req.admin._id };
+    await Business.updateOne({ _id: businessId }, { $set: { accountManager } });
+
+    await req.admin.logActivity(
+        'assign_account_manager',
+        'business',
+        businessId,
+        `Assigned ${manager.name} as account manager for ${business.businessName}`
+    );
+
+    return res.status(200).json(
+        new ApiResponse(200, { accountManager }, "Account manager assigned successfully")
     );
 });
 

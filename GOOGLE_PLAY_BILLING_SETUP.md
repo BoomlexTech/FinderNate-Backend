@@ -52,20 +52,28 @@ Create two, with product IDs matching `PLAY_PRODUCT_TO_PLAN` in
 
 | Product ID       | Name           | Base plan ID | Billing period | Price      |
 |------------------|----------------|--------------|----------------|------------|
-| `small_business` | Small Business | `monthly`    | Monthly        | see below  |
-| `corporate`      | Corporate      | `monthly`    | Monthly        | ₹2999      |
+| `small_business` | Small Business | `monthly`    | Monthly        | ₹19        |
+| `corporate`      | Corporate      | `monthly`    | Monthly        | ₹999       |
 
 Set each base plan to **auto-renewing** and activate it — a base plan left as a
 draft is invisible to the app.
 
-> ⚠️ **Small Business is ₹1/month in `plans.js`.** That is a test value. Decide
-> the real price before creating the product; Play makes price changes for
-> existing subscribers slow and consent-gated.
+The prices above are the owner's decision and match `SUBSCRIPTION_PLANS` in
+`plans.js`. Set them in Play Console to the same figures before enabling
+purchase, and check Play's minimum price for INR subscriptions when saving (not
+verified here). Play makes price changes for existing subscribers slow and
+consent-gated, so get the number right before the first real subscriber.
 
-Note the backend's `SUBSCRIPTION_PLANS` prices are now only used for display and
+Note the backend's `SUBSCRIPTION_PLANS` prices are only used for display and
 for the Cashfree (web) path. On Android, Play's price is authoritative and is
 what the user is actually charged — the plans screen shows Play's localised
 string, not ours.
+
+What each plan includes is **not** listed here: the single source is
+`buildPlanCatalog()` in `plans.js` (served by `GET /subscription/plans`), and the
+Play listing text in the app repo's `PLAY_STORE_SUBMISSION.md` is written from
+it. Keep the Play Console listing in step with that list, with no prices in the
+text (Play shows the localised price itself).
 
 ## 4. Service account for the Developer API
 
@@ -106,7 +114,7 @@ announces it here. A subscriber's `endDate` would lapse a month after purchase.
 4. Back in Pub/Sub, create a **push** subscription on the topic with endpoint:
 
    ```
-   https://api.findernate.com/api/v1/subscription/google-play/notification?token=<GOOGLE_PLAY_RTDN_SECRET>
+   https://apis.findernate.com/api/v1/subscription/google-play/notification?token=<GOOGLE_PLAY_RTDN_SECRET>
    ```
 
    The `?token=` shared secret is the only authentication on that route — it is

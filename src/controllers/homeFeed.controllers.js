@@ -17,6 +17,14 @@ import { addBadgesToNestedUsers } from '../utils/userBadge.utils.js';
 import { getLikedByPreview } from '../utils/likedByPreview.utils.js';
 import { batchIsLikedByUser, batchGetLikedByUsers, batchGetLikesCount, batchGetCommentsCount, batchSharedCount} from '../utils/postEngagement.utils.js';
 import { getFollowingIdSet, getPendingFollowRequestIdSet } from '../utils/followEngagement.utils.js';
+import {
+    feedBoostSlotCount,
+    feedRotationSeed,
+    getLiveBoosts,
+    isCorporateBusinessPlan,
+    recordBoostImpressions,
+    selectBoostSlots
+} from '../utils/boostServing.js';
 
 /**
  * Author id of a feed post, whether userId is still a raw ObjectId (cache path)
@@ -32,7 +40,11 @@ const feedPostAuthorId = (post) => {
  * ✅ HOME FEED - DATE SORTED WITH PAID BUSINESS PRIORITY
  *
  * Sorting Rules:
- * 1. Paid business posts (plan2/plan3/plan4) appear at the TOP, sorted by newest first
+ * 0. Boosted posts (utils/boostServing.js) take a few slots at the very top, at most
+ *    feedBoostSlotCount(limit) of them, Corporate boosts first. A post is only
+ *    flagged isPromoted (and counted as an impression) while it holds one of them.
+ * 1. Paid business posts (plan2/plan3/plan4) appear at the TOP, Corporate (plan3/plan4)
+ *    above Small Business (plan2), each sorted by newest first
  * 2. All other posts appear below, sorted by newest first (date descending)
  * 3. business/product/service CONTENT TYPE posts from unpaid business accounts are
  *    hidden from DISCOVERY only — i.e. from public accounts the viewer does not
@@ -127,6 +139,14 @@ export const getHomeFeed = asyncHandler(async (req, res) => {
                             isFollowRequested: !!authorId && requestedSet.has(authorId),
                         };
                     });
+
+                    // A cached page is still a page somebody looked at.
+                    recordBoostImpressions(
+                        cachedPosts
+                            .filter(post => post.isPromoted === true)
+                            .map(post => ({ postId: post._id, authorId: feedPostAuthorId(post) })),
+                        userId
+                    );
                 }
                 return res.status(200).json(cached);
             }
@@ -148,12 +168,18 @@ export const getHomeFeed = asyncHandler(async (req, res) => {
         const activePaymentPlanUserIds = await Business.find({
             subscriptionStatus: 'active',
             plan: { $ne: 'plan1' }
-        }).select('userId').lean();
+        }).select('userId plan').lean();
 
         // Convert to both ObjectIds and strings for aggregation compatibility
         const activePlanUserIds = activePaymentPlanUserIds.map(b => b.userId);
         const activePlanUserIdsStrings = activePlanUserIds.map(id => id.toString());
         const activePlanUserIdsSet = new Set(activePlanUserIdsStrings);
+        // Corporate sits above Small Business inside the paid band, and a boost
+        // takes its weight from the author's current plan.
+        const paidPlanByUserId = new Map(activePaymentPlanUserIds.map(b => [b.userId.toString(), b.plan]));
+        const corporateUserIdsStrings = activePaymentPlanUserIds
+            .filter(b => isCorporateBusinessPlan(b.plan))
+            .map(b => b.userId.toString());
 
 
         // Get all business user IDs
@@ -217,6 +243,31 @@ export const getHomeFeed = asyncHandler(async (req, res) => {
                 ]
             }]
         };
+
+        // Boosted posts that fill this page's few boosted slots. Candidates must
+        // pass the same visibility rules as everything else in the feed (block
+        // list, privacy, followers-only accounts), so the check reuses matchQuery,
+        // and must not have been reported since the boost started. They sort
+        // above the whole paid band; every other boosted post keeps its ordinary
+        // place in that band. Chosen per viewer and per 5 minutes so the slots
+        // rotate between boosts, and so the choice is stable across the pages of
+        // one browsing session.
+        const liveBoosts = await getLiveBoosts(paidPlanByUserId);
+        let promotedPostIds = [];
+        if (liveBoosts.length > 0) {
+            const visibleBoosted = await Post.find({
+                ...matchQuery,
+                _id: { $in: liveBoosts.map(boost => boost.postId) },
+                isReported: { $ne: true }
+            }).select('_id').lean();
+            const visibleBoostedIds = new Set(visibleBoosted.map(post => post._id.toString()));
+            promotedPostIds = selectBoostSlots(
+                liveBoosts.filter(boost => visibleBoostedIds.has(boost.postId)),
+                feedBoostSlotCount(limit),
+                feedRotationSeed(userId)
+            ).map(boost => boost.postId);
+        }
+        const promotedPostIdSet = new Set(promotedPostIds);
 
 
         const aggregationPipeline = [
@@ -287,12 +338,41 @@ export const getHomeFeed = asyncHandler(async (req, res) => {
                             1,
                             0
                         ]
-                    }
+                    },
+                    // Within the paid band, Corporate above Small Business
+                    isCorporate: {
+                        $cond: [
+                            { $in: ['$userIdString', corporateUserIdsStrings] },
+                            1,
+                            0
+                        ]
+                    },
+                    // The boosted slots, in the order chosen above: n for the
+                    // first, down to 1, and 0 for everything else.
+                    ...(promotedPostIds.length > 0 ? {
+                        boostRank: {
+                            $let: {
+                                vars: { slot: { $indexOfArray: [promotedPostIds, { $toString: '$_id' }] } },
+                                in: {
+                                    $cond: [
+                                        { $gte: ['$$slot', 0] },
+                                        { $subtract: [promotedPostIds.length, '$$slot'] },
+                                        0
+                                    ]
+                                }
+                            }
+                        }
+                    } : {})
                 }
             },
             {
-                // Sort: paid business posts first, then by newest date
-                $sort: { isPaidBusiness: -1, createdAt: -1 }
+                // Sort: boosted slots, then paid business posts (Corporate first), then by newest date
+                $sort: {
+                    ...(promotedPostIds.length > 0 ? { boostRank: -1 } : {}),
+                    isPaidBusiness: -1,
+                    isCorporate: -1,
+                    createdAt: -1
+                }
             },
             {
                 $skip: skip
@@ -319,6 +399,8 @@ export const getHomeFeed = asyncHandler(async (req, res) => {
                 $project: {
                     isBusinessAccount: 0,
                     isPaidBusiness: 0,
+                    isCorporate: 0,
+                    boostRank: 0,
                     userIdString: 0,
                     userInfo: 0
                 }
@@ -444,8 +526,16 @@ export const getHomeFeed = asyncHandler(async (req, res) => {
                 likedByPreview: preview.likedByText ? { text: preview.likedByText, previewUser: preview.previewUser, othersCount: preview.othersCount } : null,
                 isFollowing: !!authorId && followingSet.has(authorId),
                 isFollowRequested: !!authorId && requestedSet.has(authorId),
+                // True only for the boosted slots; the stored flag is never set.
+                isPromoted: promotedPostIdSet.has(postIdStr),
             };
         });
+        recordBoostImpressions(
+            feedData
+                .filter(post => post.isPromoted)
+                .map(post => ({ postId: post._id, authorId: feedPostAuthorId(post) })),
+            userId
+        );
         // Enrich posts with review/rating data
         const enrichedFeedData = await enrichWithRatings(feedData, 'userId');
         

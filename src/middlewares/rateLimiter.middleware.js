@@ -323,6 +323,25 @@ export const guestCheckoutIpRateLimit = rateLimit({
     store: new RedisStore({ prefix: 'rl:guestco:ip:', windowMs: 10 * 60 * 1000 })
 });
 
+// Support requests from one signed-in account. Generous for a real person with a
+// problem, but it bounds what a loop can do to the admin inbox and to the shared
+// SMTP quota that password-reset and OTP mail also depend on. Keyed by user id
+// (the route runs verifyJWT first), not IP: the cost lands on the account sending.
+export const feedbackRateLimit = rateLimit({
+    windowMs: 60 * 60 * 1000, // 1 hour
+    max: 10,
+    message: {
+        error: "You have sent several messages in a short time. Please wait a while before sending another.",
+        retryAfter: 3600
+    },
+    standardHeaders: true,
+    legacyHeaders: false,
+    skip: (req) => req.method === "OPTIONS",
+    keyGenerator: (req) => String(req.user?._id || "anonymous"),
+    passOnStoreError: true,
+    store: new RedisStore({ prefix: "rl:feedback:", windowMs: 60 * 60 * 1000 })
+});
+
 // Rate limiter for notification endpoints
 export const notificationRateLimit = rateLimit({
     windowMs: 30 * 1000, // 30 seconds

@@ -6,6 +6,7 @@ import { verifyJWT, optionalVerifyJWT } from "../middlewares/auth.middleware.js"
 import { verifyAdminJWT } from "../middlewares/adminAuth.middleware.js";
 import { getBlockedUsers as getBlockedUsersMiddleware } from "../middlewares/blocking.middleware.js";
 import { cacheUserFeed } from "../middlewares/cache.middleware.js";
+import { requirePostQuota, batchPostCount } from "../middlewares/subscription.middleware.js";
 import {
     createNormalPost,
     createTweetPost,
@@ -48,11 +49,14 @@ const mediaUpload = upload.fields([
     { name: "thumbnail", maxCount: 1 },
 ]);
 
-router.route("/create/normal").post(mediaUpload, verifyJWT, createNormalPost);
-router.route("/create/tweet").post(mediaUpload, verifyJWT, createTweetPost);
-router.route("/create/service").post(mediaUpload, verifyJWT, createServicePost);
-router.route("/create/product").post(mediaUpload, verifyJWT, createProductPost);
-router.route("/create/business").post(mediaUpload, verifyJWT, createBusinessPost);
+// requirePostQuota (Free business accounts: monthly post cap) must stay after
+// verifyJWT and before the controller, so a refused request uploads nothing.
+// Any new route that creates a Post has to carry it too.
+router.route("/create/normal").post(mediaUpload, verifyJWT, requirePostQuota(), createNormalPost);
+router.route("/create/tweet").post(mediaUpload, verifyJWT, requirePostQuota(), createTweetPost);
+router.route("/create/service").post(mediaUpload, verifyJWT, requirePostQuota(), createServicePost);
+router.route("/create/product").post(mediaUpload, verifyJWT, requirePostQuota(), createProductPost);
+router.route("/create/business").post(mediaUpload, verifyJWT, requirePostQuota(), createBusinessPost);
 
 // Batch post creation - up to 6 posts at once with mixed content types
 const batchMediaUpload = upload.fields(
@@ -62,7 +66,7 @@ const batchMediaUpload = upload.fields(
         { name: `post_${i}_thumbnail`, maxCount: 1 },
     ]).flat()
 );
-router.route("/create/batch").post(batchMediaUpload, verifyJWT, createBatchPosts);
+router.route("/create/batch").post(batchMediaUpload, verifyJWT, requirePostQuota(batchPostCount), createBatchPosts);
 router.route("/user/:userId/profile").get(verifyJWT, getUserProfilePosts);
 // Viewing a profile's tabs is browsing, so a signed-out visitor may do it —
 // but only now that getProfileTabContent actually enforces privacy. Until

@@ -14,11 +14,58 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import Subscription from '../../models/subscription.models.js';
+import { sendAdminAlert } from '../../utils/adminAlert.utils.js';
+import { needsAccountManagerAlert } from '../../utils/accountManager.utils.js';
 
 /** Which Business.plan tier a subscription maps to. */
 export const PLAN_TO_BUSINESS_PLAN = {
     small_business: 'plan2',
     corporate: 'plan3'
+};
+
+/**
+ * Should a business keep its verified tick once its paid plan has ended?
+ *
+ * Only if an admin approved it through KYC. A tick that came from paying goes
+ * with the plan; one an admin granted after reviewing the documents does not.
+ */
+export const isVerifiedAfterLapse = (business) => business?.verificationStatus === 'approved';
+
+/**
+ * Drops a business back to the free tier. The one place both the expiry job and
+ * a store-driven deactivation do it, so the two cannot drift apart.
+ */
+export const downgradeBusinessToFree = async (userId) => {
+    const Business = (await import('../../models/business.models.js')).default;
+    const business = await Business.findOne({ userId }).select('verificationStatus').lean();
+    if (!business) return;
+
+    await Business.updateOne(
+        { userId },
+        { $set: { plan: 'plan1', subscriptionStatus: 'pending', isVerified: isVerifiedAfterLapse(business) } }
+    );
+};
+
+// Tells the owner a Corporate subscriber is waiting for the manager the plan
+// promises. Runs after the activation has been written and is never awaited.
+const alertCorporateNeedsManager = async (user, business) => {
+    try {
+        await sendAdminAlert({
+            subject: 'New Corporate subscriber needs an account manager',
+            title: 'New Corporate subscriber',
+            preheader: `${business.businessName || user.fullName} subscribed to Corporate.`,
+            intro: 'A Corporate subscriber has no account manager yet. The plan promises a dedicated one, and their app shows "being assigned" until you set one.',
+            details: [
+                ['Business', business.businessName],
+                ['Owner', user.fullName],
+                ['Email', user.email],
+                ['Phone', user.phoneNumber]
+            ],
+            footer: 'Assign one under Admin > All Businesses > Corporate without manager.'
+        });
+    } catch (error) {
+        console.error('Could not send the Corporate account-manager alert:', error?.message);
+    }
 };
 
 // Adds one calendar month without the Date.setMonth() overflow that turned a
@@ -88,6 +135,8 @@ export const persistActivation = async ({
     playProductId = null
 }) => {
     let subscription = await Subscription.findOne({ userId: user._id });
+    const previousPlan = subscription?.plan;
+    const previousStatus = subscription?.status;
 
     if (subscription) {
         subscription.plan      = plan;
@@ -122,6 +171,10 @@ export const persistActivation = async ({
         { upsert: true, new: true }
     );
 
+    if (needsAccountManagerAlert({ plan, previousPlan, previousStatus, business })) {
+        void alertCorporateNeedsManager(user, business);
+    }
+
     try {
         await invalidateCaches(user._id);
     } catch (cacheError) {
@@ -136,12 +189,13 @@ export const persistActivation = async ({
  * or cancelled past its paid-through date). Downgrades the Business doc back to
  * the free tier so paid features stop working.
  *
- * The Business downgrade is deliberately identical to the one in
- * jobs/subscriptionExpiry.job.js — plan1 + subscriptionStatus 'pending'. Note
- * that 'pending' rather than the Subscription's own 'expired'/'cancelled' is
- * not a slip: Business.subscriptionStatus only permits active|inactive|pending,
- * and $set in findOneAndUpdate skips validators, so writing the Subscription
- * status through would silently store a value outside the enum.
+ * The Business downgrade is the same one jobs/subscriptionExpiry.job.js uses
+ * (downgradeBusinessToFree) — plan1 + subscriptionStatus 'pending', and the
+ * verified tick kept only for KYC-approved businesses. Note that 'pending'
+ * rather than the Subscription's own 'expired'/'cancelled' is not a slip:
+ * Business.subscriptionStatus only permits active|inactive|pending, and $set in
+ * an update skips validators, so writing the Subscription status through would
+ * silently store a value outside the enum.
  *
  * Deliberately does not delete the Subscription: `redeemedPaymentIds` is the
  * replay guard and must survive, and the row is the only record of what the
@@ -152,11 +206,7 @@ export const persistDeactivation = async ({ subscription, status = 'expired' }) 
     subscription.autoRenew = false;
     await subscription.save();
 
-    const Business = (await import('../../models/business.models.js')).default;
-    await Business.findOneAndUpdate(
-        { userId: subscription.userId },
-        { $set: { plan: 'plan1', subscriptionStatus: 'pending' } }
-    );
+    await downgradeBusinessToFree(subscription.userId);
 
     try {
         await invalidateCaches(subscription.userId);

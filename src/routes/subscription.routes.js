@@ -1,7 +1,6 @@
 import { Router } from 'express';
 import {
     getSubscriptionStatus,
-    getUpgradePrompt,
     checkFeatureAccess,
     getAvailablePlans,
     createSubscriptionOrder,
@@ -29,7 +28,6 @@ router.use(verifyJWT);
 
 // Subscription information routes
 router.get('/status', getSubscriptionStatus);                    // GET /api/v1/subscription/status
-router.get('/upgrade-prompt', getUpgradePrompt);                 // GET /api/v1/subscription/upgrade-prompt?feature=calling
 router.get('/feature/:feature/access', checkFeatureAccess);      // GET /api/v1/subscription/feature/calling/access
 router.get('/plans', getAvailablePlans);                         // GET /api/v1/subscription/plans
 

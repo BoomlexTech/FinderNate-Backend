@@ -6,3 +6,4 @@ export * from "./rating.js";
 export * from "./posts.js";
 export * from "./banking.js";
 export * from "./documents.js";
+export * from "./insights.js";

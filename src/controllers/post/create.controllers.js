@@ -5,6 +5,7 @@ import { ApiResponse } from "../../utils/ApiResponse.js";
 import Post from "../../models/userPost.models.js";
 import { deleteMultipleFromBunny } from "../../utils/bunny.js";
 import { validateDeliveryAndLocation } from "../../utils/deliveryValidation.js";
+import { assertProductCapacity } from "../../utils/planLimits.js";
 import {
     pushNewPostToBuffer,
     extractMediaFiles,
@@ -126,6 +127,10 @@ export const createTweetPost = asyncHandler(async (req, res) => {
 export const createProductPost = asyncHandler(async (req, res) => {
     const userId = req.user?._id;
     if (!userId) throw new ApiError(400, "User ID is required");
+
+    // Plan catalogue cap. Before any parsing or upload so nothing reaches Bunny
+    // for a refused product.
+    await assertProductCapacity(userId);
 
     const { postType, caption, description, mentions, mood, activity, location, tags, product, settings, scheduledAt, publishedAt, status, category, customCategory } = req.body;
     if (!postType || !["photo", "reel", "video", "story", "tweet"].includes(postType)) {
@@ -383,6 +388,12 @@ export const createBatchPosts = asyncHandler(async (req, res) => {
             scheduledAt: p.scheduledAt, publishedAt: p.publishedAt, status: p.status,
         });
     }
+
+    // Catalogue cap for the products in this batch, checked once and before any
+    // upload so a refused batch puts nothing on Bunny. The batch is atomic, so it
+    // is accepted or refused as a whole.
+    const productCount = parsedPosts.filter((p) => p.contentType === "product").length;
+    if (productCount > 0) await assertProductCapacity(userId, productCount);
 
     // Phase 2: Upload media for all posts + resolve locations.
     // Run the posts concurrently. Sequentially, a 6-post batch cost 6 x the

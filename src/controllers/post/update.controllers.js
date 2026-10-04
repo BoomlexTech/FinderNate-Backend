@@ -236,6 +236,9 @@ export const togglePostPrivacy = asyncHandler(async (req, res) => {
  * update path and checks ownership on entry.
  */
 
+// saveDraft and schedulePost are not routed today. Both create or publish a Post,
+// so any route that exposes either must carry requirePostQuota() (see
+// middlewares/subscription.middleware.js) or it bypasses the Free monthly cap.
 export const saveDraft = asyncHandler(async (req, res) => {
     const userId = req.user?._id || req.body.userId;
     const postData = req.body;

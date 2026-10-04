@@ -2,7 +2,39 @@ import { asyncHandler } from '../../utils/asyncHandler.js';
 import { ApiResponse } from '../../utils/ApiResponse.js';
 import { ApiError } from '../../utils/ApiError.js';
 import Subscription from '../../models/subscription.models.js';
+import Business from '../../models/business.models.js';
 import { User } from '../../models/user.models.js';
+import {
+    PAID_TIERS,
+    PLAN_LIMITS,
+    getPostQuota,
+    getProductCatalogUsage
+} from '../../utils/planLimits.js';
+
+const toIso = (date) => (date ? new Date(date).toISOString() : null);
+
+/**
+ * The Corporate account-manager contact card, for the business to see.
+ * Returns nothing for any other tier. An unassigned Corporate account gets
+ * `pending: true` so clients can say "being assigned" rather than show a blank.
+ */
+const loadAccountManager = async (tier, businessProfileId) => {
+    if (tier !== 'corporate' || !businessProfileId) return null;
+
+    const business = await Business.findById(businessProfileId).select('accountManager').lean();
+    const manager = business?.accountManager;
+
+    if (manager?.name || manager?.email) {
+        return {
+            pending: false,
+            name: manager.name || null,
+            email: manager.email || null,
+            phone: manager.phone || null,
+            hours: manager.hours || null
+        };
+    }
+    return { pending: true, name: null, email: null, phone: null, hours: null };
+};
 
 export const getSubscriptionStatus = asyncHandler(async (req, res) => {
     const userId = req.user._id;
@@ -17,7 +49,15 @@ export const getSubscriptionStatus = asyncHandler(async (req, res) => {
     });
 
     const subscriptionTier = subscription ? subscription.plan : 'free';
-    const hasCallingAccess = subscription && ['small_business', 'corporate'].includes(subscription.plan);
+    const hasCallingAccess = !!subscription && PAID_TIERS.includes(subscription.plan);
+
+    const [postQuota, productCatalog, accountManager] = await Promise.all([
+        getPostQuota(userId),
+        isBusinessProfile ? getProductCatalogUsage(userId) : Promise.resolve(null),
+        loadAccountManager(subscriptionTier, user.businessProfileId)
+    ]);
+
+    const boostLimits = PLAN_LIMITS[subscriptionTier].boost;
 
     res.status(200).json(
         new ApiResponse(200, {
@@ -30,86 +70,39 @@ export const getSubscriptionStatus = asyncHandler(async (req, res) => {
                     audioCall: hasCallingAccess,
                     videoCall: hasCallingAccess,
                     unlimited: hasCallingAccess
-                }
+                },
+                posts: {
+                    applies: postQuota.applies,
+                    unlimited: postQuota.unlimited,
+                    limit: postQuota.limit,
+                    used: postQuota.used,
+                    remaining: postQuota.remaining,
+                    resetsAt: toIso(postQuota.resetsAt)
+                },
+                productCatalog: productCatalog
+                    ? {
+                        unlimited: productCatalog.unlimited,
+                        limit: productCatalog.limit,
+                        used: productCatalog.used,
+                        remaining: productCatalog.remaining
+                    }
+                    : null,
+                insights: {
+                    maxDays: PLAN_LIMITS[subscriptionTier].insightsMaxDays,
+                    advanced: subscriptionTier !== 'free',
+                    comparisons: subscriptionTier === 'corporate',
+                    export: subscriptionTier === 'corporate'
+                },
+                boost: {
+                    hasAccess: !!boostLimits,
+                    ...(boostLimits || {})
+                },
+                support: {
+                    priority: subscriptionTier === 'free' ? 'standard' : subscriptionTier === 'corporate' ? 'dedicated' : 'priority'
+                },
+                accountManager
             }
         }, 'Subscription status fetched successfully')
-    );
-});
-
-export const getUpgradePrompt = asyncHandler(async (req, res) => {
-    const userId = req.user._id;
-    const { feature = 'calling' } = req.query;
-
-    const subscription = await Subscription.findOne({
-        userId,
-        status: 'active',
-        endDate: { $gt: new Date() }
-    });
-
-    const currentTier = subscription ? subscription.plan : 'free';
-
-    if (subscription && ['small_business', 'corporate'].includes(subscription.plan)) {
-        return res.status(200).json(
-            new ApiResponse(200, {
-                requiresUpgrade: false,
-                currentTier,
-                hasAccess: true,
-                message: 'You already have access to calling features'
-            }, 'No upgrade required')
-        );
-    }
-
-    const upgradePrompt = {
-        requiresUpgrade: true,
-        currentTier: 'free',
-        hasAccess: false,
-        feature,
-        title: 'Upgrade to unlock calling features',
-        message: 'Audio and video calls are available for paid subscribers. Choose a plan to start calling your connections.',
-        benefits: [
-            'Unlimited audio calls',
-            'Unlimited video calls',
-            'High-quality voice and video',
-            'Group calling (coming soon)'
-        ],
-        availablePlans: [
-            {
-                id: 'small_business',
-                name: 'Small Business',
-                price: '₹1/month',
-                features: [
-                    'Enhanced business profile',
-                    'Unlimited posts',
-                    'Advanced analytics',
-                    'Product catalog (up to 50 items)',
-                    'Priority support',
-                    'Basic advertising tools'
-                ],
-                recommended: true
-            },
-            {
-                id: 'corporate',
-                name: 'Corporate',
-                price: '₹2999/month',
-                features: [
-                    'Premium business profile',
-                    'Unlimited everything',
-                    'Advanced analytics & insights',
-                    'Unlimited product catalog',
-                    'Dedicated account manager',
-                    'Advanced advertising & promotion',
-                    'API access',
-                    'White-label options'
-                ],
-                recommended: false
-            }
-        ],
-        ctaText: 'Upgrade Now',
-        ctaUrl: '/subscription/upgrade'
-    };
-
-    res.status(200).json(
-        new ApiResponse(200, upgradePrompt, 'Upgrade prompt generated successfully')
     );
 });
 
@@ -127,9 +120,11 @@ export const checkFeatureAccess = asyncHandler(async (req, res) => {
     });
 
     const subscriptionTier = subscription ? subscription.plan : 'free';
+    const isPaid = !!subscription && PAID_TIERS.includes(subscription.plan);
 
     let hasAccess = false;
     let requiredTier = null;
+    let extra = {};
 
     switch (feature) {
         case 'calling':
@@ -137,15 +132,37 @@ export const checkFeatureAccess = asyncHandler(async (req, res) => {
         case 'video_call':
         case 'unlimited_posts':
         case 'advanced_analytics':
-        case 'product_catalog':
-            hasAccess = subscription && ['small_business', 'corporate'].includes(subscription.plan);
+        case 'boost':
+        case 'priority_support':
+            hasAccess = isPaid;
             requiredTier = hasAccess ? null : 'small_business';
             break;
 
-        case 'api_access':
-        case 'white_label':
+        // "May I post right now?" — true while the Free monthly allowance lasts.
+        case 'post_quota': {
+            const quota = await getPostQuota(userId);
+            hasAccess = !quota.applies || quota.remaining > 0;
+            requiredTier = hasAccess ? null : 'small_business';
+            extra = {
+                limit: quota.limit,
+                used: quota.used,
+                remaining: quota.remaining,
+                resetsAt: toIso(quota.resetsAt)
+            };
+            break;
+        }
+
+        // "May I add another product?" — true while the plan's catalogue has room.
+        case 'product_catalog': {
+            const usage = await getProductCatalogUsage(userId);
+            hasAccess = usage.unlimited || usage.remaining > 0;
+            requiredTier = hasAccess ? null : (usage.tier === 'free' ? 'small_business' : 'corporate');
+            extra = { limit: usage.limit, used: usage.used, remaining: usage.remaining };
+            break;
+        }
+
         case 'dedicated_manager':
-            hasAccess = subscription && subscription.plan === 'corporate';
+            hasAccess = !!subscription && subscription.plan === 'corporate';
             requiredTier = hasAccess ? null : 'corporate';
             break;
 
@@ -160,7 +177,8 @@ export const checkFeatureAccess = asyncHandler(async (req, res) => {
             currentTier: subscriptionTier,
             requiredTier,
             isBusinessProfile,
-            requiresUpgrade: !hasAccess
+            requiresUpgrade: !hasAccess,
+            ...extra
         }, 'Feature access checked successfully')
     );
 });

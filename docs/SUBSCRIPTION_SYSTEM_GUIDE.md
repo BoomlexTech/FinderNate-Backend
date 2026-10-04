@@ -20,8 +20,8 @@
 > PhonePe integrations were removed, along with `POST /api/v1/webhooks/razorpay`.
 > `RAZORPAY_*` / `PHONEPE_*` environment variables are not read by anything.
 
-The subscription system enables users to upgrade from free tier to paid plans (Small Business ₹999/mo, Corporate ₹2999/mo) with:
-- Cashfree payment integration
+The subscription system enables users to upgrade from free tier to paid plans (Small Business ₹19/mo, Corporate ₹999/mo) with:
+- Cashfree payment integration (website) and Google Play Billing (Android app)
 - Automatic subscription expiry handling
 - Webhook support for payment notifications
 - Comprehensive logging and monitoring
@@ -32,11 +32,12 @@ The subscription system enables users to upgrade from free tier to paid plans (S
 ## Features Implemented
 
 ### ✅ Core Features
-- **3-Tier Subscription Plans**: Free, Small Business (₹999/mo), Corporate (₹2999/mo)
+- **3-Tier Subscription Plans**: Free, Small Business (₹19/mo), Corporate (₹999/mo). What each plan includes is defined once, in `buildPlanCatalog()` in `src/controllers/subscription/plans.js` (served by `GET /subscription/plans`); this guide does not repeat the feature lists.
 - **Cashfree Payment Gateway**: Server-side order-status verification plus signed webhooks
 - **Subscription Management**: Create, upgrade, and expire subscriptions
 - **Business Profile Sync**: Auto-sync subscription status with business profiles
-- **Calling Features**: Audio/video calls restricted to paid users
+- **Calling Features**: Audio/video calls restricted to paid users (both Small Business and Corporate)
+- **Renewal by channel**: Google Play subscriptions (Android app) renew automatically every month until cancelled in Google Play. Cashfree (website) purchases cover one month and do not renew automatically; a new order is needed to extend. When a plan ends the account returns to Free and paid-only features stop; content is not deleted.
 
 ### ✅ Production-Ready Features
 - **Webhook Handler**: Processes Cashfree payment events asynchronously
@@ -146,7 +147,7 @@ Content-Type: application/json
     "cashfreeMode": "sandbox",
     "plan": "small_business",
     "planName": "Small Business",
-    "planPrice": 999
+    "planPrice": 19
   }
 }
 ```
@@ -352,7 +353,7 @@ All logs are stored in `logs/` directory:
     "paymentId": "pay_abc",
     "orderId": "order_xyz",
     "plan": "small_business",
-    "amount": 999,
+    "amount": 19,
     "status": "success"
   },
   "environment": "production"

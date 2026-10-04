@@ -3,9 +3,10 @@ import { asyncHandler } from '../utils/asyncHandler.js';
 import { ApiError } from '../utils/ApiError.js';
 import { ApiResponse } from '../utils/ApiResponse.js';
 import Post from '../models/userPost.models.js';
+import { PLATFORM_STORE_USER_ID } from '../constants/platformStore.js';
 
 // Fixed store owner — hardcoded in DB query, never exposed via client params
-const STORE_USER_ID = new mongoose.Types.ObjectId('69ba39e7ee60e4c9277fb780');
+const STORE_USER_ID = new mongoose.Types.ObjectId(PLATFORM_STORE_USER_ID);
 
 // Is `post` genuinely part of the online store's catalogue?
 //

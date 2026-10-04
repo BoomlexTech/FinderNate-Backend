@@ -8,6 +8,7 @@ import { ApiError } from '../utils/ApiError.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 import { isTypesenseEnabled } from '../config/typesense.config.js';
 import { getBlockedUsersFilter } from '../middlewares/blocking.middleware.js';
+import { filterBusinessPostsByPaymentPlan, bulkCheckActivePaymentPlans } from '../utils/businessPlan.utils.js';
 import {
     instantSearch as tsInstantSearch,
     searchProfiles as tsSearchProfiles,
@@ -165,9 +166,89 @@ const dropStaleHits = async (docs, Model, idKey = '_id', visibilityFilter = {}) 
     return kept;
 };
 
+/**
+ * Paid-only discovery for listings.
+ *
+ * Explore and searchAllContent already hide a Free business's product, service
+ * and business posts from other people (filterBusinessPostsByPaymentPlan). The
+ * dedicated product search did not, so the same listings were still findable
+ * here. This applies the same rule, keeping it defined in one place.
+ *
+ * The seller's own listings are always kept: a Free seller must still find their
+ * own products in search.
+ *
+ * Takes post rows that carry `userId` and `contentType`.
+ */
+const filterVisibleListings = async (rows, viewerId) => {
+    if (!Array.isArray(rows) || rows.length === 0) return rows || [];
+
+    const viewer = viewerId ? String(viewerId) : null;
+    const isOwn = (row) => viewer !== null && String(row.userId?._id || row.userId) === viewer;
+
+    const visibleToOthers = new Set(
+        (await filterBusinessPostsByPaymentPlan(rows.filter((row) => !isOwn(row)))).map((row) => String(row._id))
+    );
+    return rows.filter((row) => isOwn(row) || visibleToOthers.has(String(row._id)));
+};
+
+/**
+ * Sellers whose listings discovery hides: business accounts with no active plan.
+ *
+ * The product tab pages through results, so a seller has to be excluded INSIDE
+ * the query. Dropping them from a page afterwards leaves short or empty pages,
+ * and the app reads an empty page as the end of the results. The set is cached
+ * for a minute because it is the same for every viewer.
+ *
+ * It is one id per unpaid business account. If that ever grows past what a
+ * `$nin` list can carry, the plan status belongs on the search document itself.
+ */
+const HIDDEN_SELLERS_TTL_MS = 60 * 1000;
+let hiddenSellersCache = { at: 0, ids: [] };
+
+const getUnpaidSellerIds = async (viewerId) => {
+    if (Date.now() - hiddenSellersCache.at > HIDDEN_SELLERS_TTL_MS) {
+        try {
+            const businessUsers = await User.find({ isBusinessProfile: true }).select('_id').lean();
+            const ids = businessUsers.map((user) => String(user._id));
+            const active = await bulkCheckActivePaymentPlans(ids);
+            // bulkCheckActivePaymentPlans swallows its own errors and answers with
+            // an empty map, which would read as "every seller is unpaid".
+            if (ids.length > 0 && active.size === 0) throw new Error('plan lookup returned nothing');
+            hiddenSellersCache = { at: Date.now(), ids: ids.filter((id) => active.get(id) !== true) };
+        } catch (err) {
+            // Fail open like Explore: a lookup failure must not blank the product
+            // search. Keep the last known list and retry on the next request.
+            console.error('getUnpaidSellerIds failed:', err.message);
+        }
+    }
+    // A seller still finds their own listings.
+    return viewerId ? hiddenSellersCache.ids.filter((id) => id !== String(viewerId)) : hiddenSellersCache.ids;
+};
+
+/**
+ * Same rule for Typesense hits. A product card does not carry its seller, so the
+ * posts are read back by id (one indexed query over at most `perPage` ids).
+ * Cards whose post could not be found are kept: dropStaleHits owns that call.
+ */
+const dropUnpaidSellerHits = async (cards, viewerId) => {
+    if (!Array.isArray(cards) || cards.length === 0) return cards || [];
+
+    const ids = cards.map((card) => String(card?._id ?? '')).filter((id) => /^[a-f0-9]{24}$/i.test(id));
+    if (ids.length === 0) return cards;
+
+    const rows = await Post.find({ _id: { $in: ids } }).select('userId contentType').lean();
+    const visible = new Set((await filterVisibleListings(rows, viewerId)).map((row) => String(row._id)));
+    const judged = new Set(rows.map((row) => String(row._id)));
+
+    return cards.filter((card) => {
+        const key = String(card?._id ?? '');
+        return !judged.has(key) || visible.has(key);
+    });
+};
+
 /* --------------------------- MongoDB fallbacks ----------------------------- */
 
-const mongoInstantFallback = async (query, blockedUsers, limit) => {
+const mongoInstantFallback = async (query, blockedUsers, limit, viewerId) => {
     const rx = new RegExp('^' + escapeRegex(query), 'i'); // prefix match
     const [users, products] = await Promise.all([
         User.find({
@@ -191,6 +272,7 @@ const mongoInstantFallback = async (query, blockedUsers, limit) => {
             .select('customization.product media userId contentType')
             .lean(),
     ]);
+    const visibleProducts = await filterVisibleListings(products, viewerId);
 
     return {
         users: users.map((u) => ({
@@ -204,7 +286,7 @@ const mongoInstantFallback = async (query, blockedUsers, limit) => {
             businessName: null,
             businessCategory: null,
         })),
-        products: products.map(postToProductCard),
+        products: visibleProducts.map(postToProductCard),
     };
 };
 
@@ -247,10 +329,11 @@ export const instantSearch = asyncHandler(async (req, res) => {
             // ghost the emptiness check below falls through to Mongo, which is
             // the right answer rather than a blank screen.
             if (data) {
-                const [users, products] = await Promise.all([
+                const [users, liveProducts] = await Promise.all([
                     dropStaleHits(data.users, User, '_id', VISIBLE_USER_FILTER),
                     dropStaleHits(data.products, Post, '_id', PUBLIC_POST_FILTER),
                 ]);
+                const products = await dropUnpaidSellerHits(liveProducts, req.user?._id);
                 data = { ...data, users, products };
             }
         } catch (err) {
@@ -259,7 +342,7 @@ export const instantSearch = asyncHandler(async (req, res) => {
     }
     // Empty on BOTH sides means the index has nothing to say — see isEmptyTsResult.
     if (!data || (data.users.length === 0 && data.products.length === 0)) {
-        data = await mongoInstantFallback(query, blockedUsers, limit);
+        data = await mongoInstantFallback(query, blockedUsers, limit, req.user?._id);
     }
 
     const keywords = await keywordsPromise;
@@ -388,7 +471,12 @@ export const searchProducts = asyncHandler(async (req, res) => {
         ? { lat, lng, radiusKm: toFloat(req.query.radius) || 25 }
         : null;
 
-    const blockedUsers = await resolveBlockedUsers(req);
+    // Blocked sellers and unpaid sellers are both excluded by author, so one
+    // list serves the engine clause and the Mongo $nin alike.
+    const blockedUsers = [
+        ...(await resolveBlockedUsers(req)),
+        ...(await getUnpaidSellerIds(req.user?._id)),
+    ];
 
     if (isTypesenseEnabled) {
         try {
@@ -408,7 +496,10 @@ export const searchProducts = asyncHandler(async (req, res) => {
                 // This is the Products tab, and a stale index is exactly what
                 // made it read as "shows nothing relevant": the ghosts crowd out
                 // the real listings and every one of them 404s when tapped.
-                const products = await dropStaleHits(r.products, Post, '_id', PUBLIC_POST_FILTER);
+                const liveProducts = await dropStaleHits(r.products, Post, '_id', PUBLIC_POST_FILTER);
+                // The engine clause carries at most 500 ids, so this is the
+                // safety net for any unpaid seller past that cap.
+                const products = await dropUnpaidSellerHits(liveProducts, req.user?._id);
                 // Every hit on this page was a ghost: fall through to the Mongo
                 // path rather than answering with an empty page the user would
                 // read as "no such product".

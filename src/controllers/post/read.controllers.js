@@ -20,6 +20,17 @@ import { checkContentVisibility, getViewableUserIds } from "../../middlewares/pr
 import { sendDeletedTombstone } from "../../utils/contentTombstone.utils.js";
 
 /**
+ * Post contentTypes a Free business account cannot promote: they are kept out of
+ * Explore, Search and the home feeds of non-followers. Mirrors
+ * COMMERCIAL_CONTENT_TYPES in businessPlan.utils.js, which is the rule that
+ * actually does the filtering. Only used for the "upgrade" banner copy and flags.
+ */
+const FREE_PLAN_HIDDEN_CONTENT_TYPES = ['product', 'service', 'business'];
+const FREE_PLAN_UPGRADE_MESSAGE =
+    "Your posts are visible on your profile and to your followers. On the Free plan, your product, service and business listings are not shown in Explore or Search, or in the home feeds of people who don't follow you. Upgrade to reach more people.";
+const FREE_PLAN_LISTING_NOTICE = "Not shown in Explore or Search until you upgrade";
+
+/**
  * Is this post's author a private account?
  *
  * `privacy` and `isFullPrivate` are two separate schema fields written
@@ -167,12 +178,12 @@ export const getPostById = asyncHandler(async (req, res) => {
 
     if (postAuthor?.isBusinessProfile && isViewingOwnPost) {
         const hasActivePlan = await hasActivePaymentPlan(postAuthorId);
-        if (!hasActivePlan) {
+        if (!hasActivePlan && FREE_PLAN_HIDDEN_CONTENT_TYPES.includes(post.contentType)) {
             post.isHiddenFromFeed = true;
-            post.visibilityMessage = "Hidden from home feed - Upgrade to show in feed";
+            post.visibilityMessage = FREE_PLAN_LISTING_NOTICE;
             post.upgradeMessage = {
                 title: "Upgrade Plan",
-                message: "Your business posts are visible on your profile but hidden from the home feed. Upgrade to a paid plan for more reach.",
+                message: FREE_PLAN_UPGRADE_MESSAGE,
                 ctaText: "Upgrade Now",
                 ctaUrl: "/business/select-plan"
             };
@@ -294,16 +305,27 @@ export const getMyPosts = asyncHandler(async (req, res) => {
         const hasActivePlan = await hasActivePaymentPlan(userId);
 
         if (!hasActivePlan) {
-            hiddenPostsCount = postsWithBadges.length;
+            // Only product, service and business listings are withheld from
+            // discovery on the Free plan (see filterBusinessPostsByPaymentPlan in
+            // businessPlan.utils.js). Everything else, and every post for the
+            // author and their followers, is shown as normal, so only listings
+            // are flagged and counted. If those discovery rules change, change
+            // this copy too.
+            const isListing = (post) => FREE_PLAN_HIDDEN_CONTENT_TYPES.includes(post.contentType);
+            hiddenPostsCount = postsWithBadges.filter(isListing).length;
             upgradeMessage = {
                 title: "Upgrade Plan",
-                message: "Your business posts are currently only visible to you. Upgrade to a paid plan.",
+                message: FREE_PLAN_UPGRADE_MESSAGE,
                 ctaText: "Upgrade Now",
                 ctaUrl: "/business/select-plan"
             };
             postsWithBadges.forEach(post => {
-                post.isVisibleToOthers = false;
-                post.visibilityMessage = "Only visible to you - Upgrade to show to others";
+                if (isListing(post)) {
+                    post.isHiddenFromFeed = true;
+                    post.visibilityMessage = FREE_PLAN_LISTING_NOTICE;
+                } else {
+                    post.isHiddenFromFeed = false;
+                }
             });
         } else {
             postsWithBadges.forEach(post => {
@@ -442,16 +464,23 @@ export const getUserProfilePosts = asyncHandler(async (req, res) => {
                 const hasActivePlan = await hasActivePaymentPlan(userId);
 
                 if (!hasActivePlan) {
-                    hiddenPostsCount = visiblePosts.length;
+                    // Only listings are withheld from discovery on the Free plan
+                    // (see getMyPosts), so only they are flagged and counted.
+                    const isListing = (post) => FREE_PLAN_HIDDEN_CONTENT_TYPES.includes(post.contentType);
+                    hiddenPostsCount = visiblePosts.filter(isListing).length;
                     upgradeMessage = {
                         title: "Upgrade Plan",
-                        message: "Your business posts are visible on your profile but hidden from the home feed. Upgrade to a paid plan for more reach.",
+                        message: FREE_PLAN_UPGRADE_MESSAGE,
                         ctaText: "Upgrade Now",
                         ctaUrl: "/business/select-plan"
                     };
                     postsAfterBusinessFilter.forEach(post => {
-                        post.isHiddenFromFeed = true;
-                        post.visibilityMessage = "Hidden from home feed - Upgrade to show in feed";
+                        if (isListing(post)) {
+                            post.isHiddenFromFeed = true;
+                            post.visibilityMessage = FREE_PLAN_LISTING_NOTICE;
+                        } else {
+                            post.isHiddenFromFeed = false;
+                        }
                     });
                 } else {
                     postsAfterBusinessFilter.forEach(post => {

@@ -9,6 +9,7 @@ import { User } from "../../models/user.models.js";
 import { invalidateAuthCache } from "../../middlewares/auth.middleware.js";
 import { deleteFromBunny, deleteMultipleFromBunny } from "../../utils/bunny.js";
 import { invalidatePostCaches } from "../post/helpers.js";
+import { cancelBoostsForPost } from "../../utils/boostServing.js";
 import { ApiError } from "../../utils/ApiError.js";
 import { ApiResponse } from "../../utils/ApiResponse.js";
 import { asyncHandler } from "../../utils/asyncHandler.js";
@@ -135,6 +136,8 @@ const takeDownPost = async (post) => {
     // that no longer exist.
     await Post.findByIdAndDelete(post._id);
     await User.findByIdAndUpdate(post.userId, { $pull: { posts: post._id } });
+    await cancelBoostsForPost(post._id).catch((error) =>
+        console.error("Could not cancel boosts for a removed post:", error));
 
     if (mediaUrls.length > 0) {
         try {
@@ -260,6 +263,19 @@ export const updateReportStatus = asyncHandler(async (req, res) => {
     }
 
     await report.save();
+
+    // Once no report on the post is still waiting for a reviewer, it is no longer
+    // "reported" for boost and promotion purposes.
+    const reviewedPostId = report.reportedPostId?._id;
+    if (reviewedPostId && ![pending, under_review].includes(status)) {
+        const stillOpen = await Report.exists({
+            reportedPostId: reviewedPostId,
+            status: { $in: [pending, under_review] }
+        });
+        if (!stillOpen) {
+            await Post.updateOne({ _id: reviewedPostId }, { $set: { isReported: false } });
+        }
+    }
 
     await req.admin.logActivity(
         `report_${status}`,

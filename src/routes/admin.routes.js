@@ -27,6 +27,7 @@ import {
     getBusinessVerificationDetails,
     getBusinessVerificationHistory,
     verifyBusinessDocument,
+    assignAccountManager,
 
     // Analytics & Dashboard
     getDashboardStats,
@@ -182,6 +183,11 @@ router.route("/businesses/pending-verification").get(
 router.route("/businesses/:businessId/verify").post(
     requirePermission('manageBusiness'),
     verifyBusinessAccount
+);
+
+router.route("/businesses/:businessId/account-manager").put(
+    requirePermission('manageBusiness'),
+    assignAccountManager
 );
 
 router.route("/businesses/:businessId/details").get(

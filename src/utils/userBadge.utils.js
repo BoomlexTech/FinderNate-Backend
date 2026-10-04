@@ -1,4 +1,5 @@
 import Subscription from '../models/subscription.models.js';
+import { badgeForPlan } from '../constants/subscriptionBadges.js';
 import mongoose from 'mongoose';
 
 /**
@@ -21,23 +22,7 @@ export const getUserBadge = async (user) => {
         return null; // No badge for free users
     }
 
-    // Return badge based on subscription plan
-    const badgeMap = {
-        small_business: {
-            type: 'small_business',
-            label: 'Small Business',
-            color: '#22C55E', // green tick
-            isPaid: true
-        },
-        corporate: {
-            type: 'corporate',
-            label: 'Corporate',
-            color: '#3B82F6', // blue tick
-            isPaid: true
-        }
-    };
-
-    return badgeMap[subscription.plan] || null;
+    return badgeForPlan(subscription.plan);
 };
 
 /**
@@ -96,22 +81,6 @@ export const addBadgesToUsers = async (users) => {
         subscriptionMap.set(sub.userId.toString(), sub.plan);
     });
 
-    // Badge definitions
-    const badgeMap = {
-        small_business: {
-            type: 'small_business',
-            label: 'Small Business',
-            color: '#22C55E', // green tick
-            isPaid: true
-        },
-        corporate: {
-            type: 'corporate',
-            label: 'Corporate',
-            color: '#3B82F6', // blue tick
-            isPaid: true
-        }
-    };
-
     // Add badges to all users based on their subscription plan
     return users.map(userObj => {
         if (!userObj) return null;
@@ -126,7 +95,7 @@ export const addBadgesToUsers = async (users) => {
         const plan = subscriptionMap.get(userId);
 
         // Add badge based on subscription plan (not isBusinessProfile)
-        user.subscriptionBadge = plan && badgeMap[plan] ? badgeMap[plan] : null;
+        user.subscriptionBadge = badgeForPlan(plan);
 
         return user;
     });
