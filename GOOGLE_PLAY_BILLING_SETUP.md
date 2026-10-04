@@ -335,3 +335,96 @@ Licence-tester subscriptions renew on an accelerated clock (monthly ≈ every
       (old token ending, new token starting). The plan must not drop to Free in
       between, and the final row must be Small Business on the new token with
       the Business doc on `plan2`
+
+## Notifications
+
+A plan used to end without a word: the screens showed a date and nothing else
+told the user. Business plan events are now sent as a notification (type
+`subscription`, shown in the notifications list, no sender), a socket event, a
+push (web-push + FCM, tapping opens `/subscription` or the plans screen) and,
+for the ones that matter, an email.
+
+| Event (`data.event`) | When | Text | Email |
+| --- | --- | --- | --- |
+| `ending_soon` | Daily 10:00 IST job, 7, 3 and 1 calendar days (IST) before the end of a plan that will NOT renew: every website plan, and a Play plan with renewal switched off | "Your Corporate plan ends in 7 days, on 20 Oct 2026, and then moves to Free. Pay again before it ends (app or findernate.com) to keep it." (Play: "Resubscribe in Google Play to keep it.") | 7 and 1 |
+| `plan_changed` | A new purchase, an upgrade, a downgrade that has taken effect, a website plan switch, or coming back after the plan ended | "You are now on Corporate. Active until 20 Oct 2026." | no |
+| `downgrade_scheduled` | Play reports a downgrade for the end of the period (newly set or changed) | "Your plan will switch from Corporate to Small Business on 20 Oct 2026. You keep Corporate until then." | no |
+| `renewal_cancelled` | A Play plan's renewal goes from on to off AND Play reports it CANCELED | "Your Small Business plan will not renew. It stays active until 20 Oct 2026, then moves to Free." | yes |
+| `plan_ended` | The plan expired, was revoked or refunded and the user is on Free | "Your Small Business plan has ended. You are on the Free plan now." (a failed payment, Play ON_HOLD, says "is on hold because the last payment failed ... Update your payment method in Google Play to restore it", title "Your plan is on hold"; a pause says "is paused in Google Play", title "Your plan is paused"; the event stays `plan_ended`) | yes |
+| `plan_extended` | The same website plan was paid again | "Your Small Business plan is extended until 20 Oct 2026." | no |
+
+Push titles: "Your plan ends soon", "Your plan changed", "Plan change scheduled",
+"Plan will not renew", "Your plan has ended", "Plan extended". Dates are written
+in IST. A Google Play plan that renews gets NO reminder and no notice for its
+own renewals; Play already tells those users.
+
+**Where each is raised.** `persistActivation` (plan_changed, plan_extended, and a
+downgrade that was already scheduled), `refreshPlayFacts` in `googlePlay.js`
+(renewal_cancelled, downgrade_scheduled), `persistDeactivation` and the website
+branch of the expiry job (plan_ended), and `sendExpiryReminders` (ending_soon).
+The code that decides what is owed and sends it is
+`controllers/subscription/notices.js`; the wording is
+`utils/subscriptionNotice.utils.js`; the delivery is
+`createSubscriptionNotification` in `notification.controllers.js`.
+
+**Exactly once.** The Play notification, the app's verify call and the nightly
+job can all see the same change, and two writers that both loaded the row before
+either saved both believe they made it. So a notice is claimed before it is sent:
+one atomic update adds a key to `Subscription.sentNotices` only while the key is
+absent, and only the caller that added it sends. Keys name what the notice is
+about (the payment for an activation, the end date for a reminder, the
+schedule for a downgrade), so a renewal, which moves the end date, starts a fresh
+reminder countdown without anything having to reset. Switching renewal back on
+(or clearing a scheduled downgrade) gives that key back, so cancelling (or
+scheduling) again later is announced again, and so does ending a plan (the same
+Play order live again later is announced again). An activation key names the
+payment only, not the event, so "now on" and "extended" for one payment cannot
+both go out. If sending fails, the claim is given
+back so the next run can try. `sentNotices` is capped at 30 keys and is removed
+from every client response.
+
+**Slow mail or push.** A notice waits at most 15 s for its push and email
+(`SUBSCRIPTION_SEND_TIMEOUT_MS`), and the reminder job works four users at a time,
+so an unreachable mail host delays the loop by seconds, not hours.
+
+**Never in billing's way.** Notices run detached from the plan write, swallow
+their own errors and are never awaited by it. A failed push, email, socket or
+database write is logged (`[subscription-notice]`, `[notify]`) and costs the
+user only that notice.
+
+**Not covered (known gaps).**
+- A plan that ended more than 14 days ago is expired without a "has ended" notice
+  (an old leftover row, or the job was down), so the first run after this shipped
+  cannot send a burst of stale notices.
+- A claim is taken before sending, so a process crash between the two loses that
+  one notice (it is never sent twice). A send that fails normally gives the claim
+  back.
+- A reminder run that is missed on its exact day (server down at 10:00 IST) is
+  not made up the next day; the later reminders still go out.
+- A cancelled Play plan is checked with Play before its reminder (`playConfirmsRenewal`):
+  if Play says it renews again, no reminder is sent and the row is corrected. When
+  Play cannot be asked, the stored `autoRenew` stands and the reminder goes out.
+- The website plan "has ended" notice is sent by the 02:00 IST expiry job, so a
+  push can arrive at night. Moving it to the 10:00 run is a product decision.
+- The `PENDING` fall-through at the end of `reconcilePlaySubscription` (a state
+  that is neither entitled nor ended, on the row's own token) writes `autoRenew`
+  and `endDate` without announcing anything.
+- A plan that stops renewing with fewer than 7 days left gets the "will not renew"
+  notice and only the reminders for the marks still ahead (3 and/or 1 day).
+- The deprecated test-only `POST /subscription/test-upgrade` writes the row
+  directly and sends nothing.
+
+### Test checklist for notices
+
+- [ ] Website plan 7 / 3 / 1 days from its end: three notifications and pushes, two
+      emails; the dates are in IST
+- [ ] Cancelled Play plan: same, with the Google Play wording; a renewing Play plan
+      gets nothing
+- [ ] Pay the website plan again before it ends: "extended until"; a new countdown
+      starts 7 days before the new end date
+- [ ] Cancel renewal in Play: one notification, one push, one email; restart and
+      cancel again: announced again
+- [ ] Schedule a downgrade in the app: one "will switch" notice, no email
+- [ ] Let a plan end: one "has ended" notice and email; the Business doc is Free
+- [ ] Switch off the email provider or send a bad address: the notification and push
+      still arrive and the purchase still activates

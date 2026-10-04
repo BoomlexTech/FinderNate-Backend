@@ -11,6 +11,13 @@ import { User } from "../models/user.models.js";
 import { sendEmail } from "../utils/sendEmail.js";
 import { renderEmail, emailParagraph, emailCallout } from "../utils/emailTemplate.js";
 import { deliverPush } from "../services/pushDelivery.service.js";
+import { buildSubscriptionNotice, settleWithin } from "../utils/subscriptionNotice.utils.js";
+
+// How long a plan notice waits for its push or its email before moving on. The
+// mail transport has no timeout shorter than minutes, and the reminder job sends
+// one notice after another, so one unreachable mail host would otherwise hold
+// back every later user's reminder (and the claim for the hung one stays taken).
+export const SUBSCRIPTION_SEND_TIMEOUT_MS = 15000;
 
 const sendRealTimeNotification = async (recipientId, notification, overrides = {}) => {
     // Use Socket.IO Redis adapter to emit to user across all processes
@@ -396,6 +403,129 @@ export const createBusinessVerificationNotification = async ({
     } catch (e) {
         console.warn(`[notify] business verification email failed for ${recipientId}: ${e?.message}`);
     }
+};
+
+/**
+ * Something happened to a business's plan: it started, changed, was extended,
+ * will not renew, is about to end or has ended.
+ *
+ * Until this existed the only way to learn a plan was ending was to open the
+ * Subscription screen and read the date. A website plan is one paid month with
+ * no renewal, so the user who forgot simply dropped to Free one morning and
+ * found out when a feature stopped working.
+ *
+ * Same shape as createBusinessVerificationNotification: a platform notice
+ * (senderId null) that is stored, emitted on the socket, pushed, and for the
+ * events that matter also emailed. WHAT it says lives in buildSubscriptionNotice.
+ *
+ * WHEN it is sent is not decided here. Callers go through
+ * controllers/subscription/notices.js, which makes each transition notify once
+ * and keeps a failure here from reaching billing. This function therefore throws
+ * only while nothing has been delivered yet (the account lookup or the row write
+ * failed, so the caller can give its claim back and a retry cannot double-send);
+ * everything after the row exists is best-effort and logged.
+ *
+ * @returns the Notification row, or null when there was nothing to send (an
+ *          unknown event, or an account that no longer exists).
+ */
+export const createSubscriptionNotification = async ({
+    recipientId,
+    event,
+    plan,
+    pendingPlan,
+    endDate,
+    source,
+    daysLeft,
+    reason,
+}) => {
+    if (!recipientId) return null;
+
+    const notice = buildSubscriptionNotice({ event, plan, pendingPlan, endDate, source, daysLeft, reason });
+    if (!notice) return null;
+
+    // A Subscription row can outlive its account, and a notification addressed to
+    // a deleted user is only clutter that no one will ever read. Looked up here
+    // rather than by the caller because the email needs the same document.
+    const user = await User.findById(recipientId).select('email fullName username isDeleted').lean();
+    if (!user || user.isDeleted) return null;
+
+    const notification = await Notification.create({
+        receiverId: recipientId,
+        type: 'subscription',
+        senderId: null,
+        message: notice.message,
+    });
+
+    try {
+        await sendRealTimeNotification(recipientId, notification);
+        await notificationCache.invalidateNotificationCache(recipientId);
+    } catch (e) {
+        console.warn(`[notify] subscription notice socket/cache step failed for ${recipientId}: ${e?.message}`);
+    }
+
+    // Push and email run side by side and neither can fail the other. deliverPush
+    // never rejects; the catch is for a future change that makes it.
+    const sending = [
+        (async () => {
+            try {
+                await deliverPush(recipientId, {
+                    title: notice.title,
+                    body: notice.message,
+                    type: 'subscription',
+                    data: { notificationId: String(notification._id), event },
+                    url: '/subscription',
+                });
+            } catch (e) {
+                console.warn(`[notify] subscription push failed for ${recipientId}: ${e?.message}`);
+            }
+        })(),
+    ];
+
+    if (notice.email && user.email) {
+        sending.push((async () => {
+            try {
+                const name = user.fullName || user.username || 'there';
+                // emailParagraph/emailCallout escape what they are given, and the
+                // plain-text part is not HTML at all, so a name containing `<`
+                // cannot reshape either.
+                const bodyHtml = emailParagraph(`Hi ${name},`, { topGap: 0 })
+                    + notice.email.paragraphs.map((p) => emailParagraph(p)).join('')
+                    + emailCallout(notice.email.callout);
+                const text = [
+                    notice.email.title, '',
+                    `Hi ${name},`, '',
+                    ...notice.email.paragraphs,
+                    '', notice.email.callout,
+                    '', '--', 'findernate.com',
+                ].join('\n');
+
+                const result = await sendEmail({
+                    to: user.email,
+                    subject: notice.email.subject,
+                    html: renderEmail({
+                        title: notice.email.title,
+                        preheader: notice.email.preheader,
+                        bodyHtml,
+                    }),
+                    text,
+                });
+                if (result && result.success === false) {
+                    console.warn(`[notify] subscription email not delivered to ${recipientId}: ${result.error}`);
+                }
+            } catch (e) {
+                console.warn(`[notify] subscription email failed for ${recipientId}: ${e?.message}`);
+            }
+        })());
+    }
+
+    // Each task catches its own errors, so this only waits for them to finish, and
+    // not for longer than a notice can afford to (the work carries on unattended).
+    await Promise.allSettled(sending.map((task) => settleWithin(
+        task,
+        SUBSCRIPTION_SEND_TIMEOUT_MS,
+        () => console.warn(`[notify] subscription push/email for ${recipientId} still running after ${SUBSCRIPTION_SEND_TIMEOUT_MS} ms, not waiting`)
+    )));
+    return notification;
 };
 
 // 🔴 Unlike Notification

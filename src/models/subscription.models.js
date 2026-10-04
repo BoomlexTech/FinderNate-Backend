@@ -126,6 +126,32 @@ const SubscriptionSchema = new mongoose.Schema({
     pendingPlanAt: {
         type: Date,
         default: null
+    },
+    /**
+     * Which plan notices (see controllers/subscription/notices.js) this user has
+     * already been sent, as keys that name the thing the notice was about: the
+     * payment an activation came from, the endDate a reminder counted down to,
+     * the downgrade that was scheduled. Sending is "claim the key, then send":
+     * the claim is one update that only matches while the key is absent, so the
+     * Play notification, the app's verify call and the nightly job can all see the
+     * same change and exactly one of them tells the user.
+     *
+     * Keys name their endDate, so a renewal (which moves endDate) starts a fresh
+     * set of reminders without anything having to reset. Capped (see
+     * MAX_SENT_NOTICES) so the row stays small; newest last. Written only with
+     * atomic updates, never through save(), so it cannot cause a VersionError for
+     * the billing writes. Internal bookkeeping: toPublicSubscription removes it.
+     *
+     * `default: undefined` on purpose. An array path defaults to [] otherwise, and
+     * Mongoose then writes that [] ($set) the first time a row that predates this
+     * field is save()d, which would wipe a claim another writer made a moment
+     * earlier and let the same notice go out twice. Left undefined, a missing
+     * field stays missing: the claim ($ne + $push) works on it, and readers use
+     * `|| []`.
+     */
+    sentNotices: {
+        type: [String],
+        default: undefined
     }
 }, { timestamps: true });
 

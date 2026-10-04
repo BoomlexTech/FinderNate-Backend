@@ -21,6 +21,7 @@ import {
     syncBusinessToSubscription,
     toPublicSubscription
 } from './activation.js';
+import { announceFactChanges } from './notices.js';
 import {
     PaymentLogger,
     SubscriptionLogger,
@@ -84,6 +85,13 @@ const ENDED_STATES = new Set([
 ]);
 
 const STATE_CANCELED = 'SUBSCRIPTION_STATE_CANCELED';
+
+// Of the ended states, the two that are not "ran out": they change what the user
+// is told (the plan is not gone for good, and there is something they can do).
+const PLAN_ENDED_REASON = {
+    SUBSCRIPTION_STATE_ON_HOLD: 'on_hold',
+    SUBSCRIPTION_STATE_PAUSED: 'paused'
+};
 
 /**
  * How long after a REPLACED token's expiry we keep waiting for its successor to
@@ -220,6 +228,12 @@ const sameTime = (a, b) =>
 const refreshPlayFacts = async (subscription, details) => {
     const pendingPlanAt = details.pendingPlan ? details.expiryTime : null;
     let changed = false;
+    // For the notices below: what the user was told the plan looked like.
+    const before = {
+        autoRenew: subscription.autoRenew,
+        pendingPlan: subscription.pendingPlan || null,
+        pendingPlanAt: subscription.pendingPlanAt || null
+    };
 
     if (subscription.autoRenew !== details.autoRenewing) {
         subscription.autoRenew = details.autoRenewing;
@@ -238,7 +252,13 @@ const refreshPlayFacts = async (subscription, details) => {
         changed = true;
     }
 
-    if (changed) await subscription.save();
+    if (changed) {
+        await subscription.save();
+        // This is the one place Play turning renewal off, or scheduling a
+        // downgrade, is written, so it is where the user is told. Detached; see
+        // notices.js for why two callers seeing the same change still send once.
+        announceFactChanges(subscription, before, { cancelled: details.state === STATE_CANCELED });
+    }
     return changed;
 };
 
@@ -299,6 +319,42 @@ export const playRowStillRenews = async (subscription) => {
         }
     }
     return false;
+};
+
+/**
+ * Does Play say [subscription] (a row we store as NOT renewing) is renewing after
+ * all? For the "your plan ends soon" reminder, which must never go to a plan that
+ * will renew: the user can switch renewal back on in Play and, if that
+ * notification and the app's verify call both missed us, our copy still says
+ * cancelled.
+ *
+ * playRowStillRenews asks the same question for rows we store as renewing and
+ * answers false at once for these, so it cannot be reused. When Play does say it
+ * renews, our copy is corrected on the spot (autoRenew, endDate), which also
+ * stops the reminder query from picking the row up again.
+ *
+ * True only on Play's word. When Play cannot be asked (not configured, a failed
+ * call) this is false and the reminder goes out on what the row says: a missing
+ * reminder is the worse mistake for a plan that really is ending.
+ */
+export const playConfirmsRenewal = async (subscription) => {
+    if (!subscription?.playPurchaseToken || !isGooglePlayConfigured()) return false;
+
+    let details;
+    try {
+        details = readPurchase(await getSubscriptionPurchase(subscription.playPurchaseToken));
+    } catch (error) {
+        ErrorLogger.logPaymentGatewayError(String(subscription.userId), null, error);
+        return false;
+    }
+    if (!isRenewingPurchase(details)) return false;
+
+    try {
+        await refreshPlayFacts(subscription, details);
+    } catch (refreshError) {
+        console.warn('[Play] Could not refresh a row Play says renews:', refreshError?.message);
+    }
+    return true;
 };
 
 /**
@@ -874,7 +930,11 @@ export const reconcilePlaySubscription = async (purchaseToken) => {
             if (mayHaveSuccessor) {
                 return { reconciled: true, state: details.state, active: false, waiting: true };
             }
-            await persistDeactivation({ subscription, status: 'expired' });
+            await persistDeactivation({
+                subscription,
+                status: 'expired',
+                reason: PLAN_ENDED_REASON[details.state]
+            });
         }
         return { reconciled: true, state: details.state, active: false };
     }

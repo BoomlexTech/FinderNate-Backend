@@ -2,6 +2,8 @@ import cron from 'node-cron';
 import Subscription from '../models/subscription.models.js';
 import { User } from '../models/user.models.js';
 import { downgradeBusinessToFree } from '../controllers/subscription/activation.js';
+import { announceEndingSoon, announcePlanEnded } from '../controllers/subscription/notices.js';
+import { REMINDER_DAYS, istDaysUntil, settleWithin } from '../utils/subscriptionNotice.utils.js';
 import { FeedCacheManager } from '../utils/cache.utils.js';
 import { redisClient } from '../config/redis.config.js';
 
@@ -15,8 +17,22 @@ import { redisClient } from '../config/redis.config.js';
  * 3. Downgrade business profiles to plan1 (free)
  * 4. Update business subscriptionStatus to 'pending'
  * 5. Invalidate cache for affected users
- * 6. Send notifications (optional - can be added later)
+ * 6. Tell the user their plan has ended (notification, push and email)
+ *
+ * A second job, at 10:00 AM, reminds users whose plan will NOT renew that it is
+ * about to end (sendExpiryReminders below).
  */
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+// Reminders are sent a few at a time: each one waits on a database claim, a push
+// and an email, and a slow mail host should cost the loop a fraction of its users,
+// not all of them. Few enough that a burst cannot swamp the mail host.
+const REMINDER_CONCURRENCY = 4;
+
+// How long the reminder job waits for Google Play to say whether a cancelled plan
+// has been switched back on, before reminding on what the row says.
+const PLAY_CHECK_TIMEOUT_MS = 15000;
 
 // Helper function to handle subscription expiry
 export const handleExpiredSubscriptions = async () => {
@@ -93,9 +109,23 @@ export const handleExpiredSubscriptions = async () => {
                     continue;
                 }
 
-                // 1. Update subscription status to expired
-                subscription.status = 'expired';
-                await subscription.save();
+                // 1. Update subscription status to expired. Compare-and-set, like
+                //    persistDeactivation: this row was read a while ago, and a
+                //    renewal that landed since (the success-page verify or the
+                //    webhook) must not be overwritten with 'expired' (a plain
+                //    save() of this stale copy would, and would then tell a user
+                //    who has just paid that their plan has ended). Matching the
+                //    status and endDate we read means "still the lapsed plan we
+                //    saw"; anything else is somebody else's change.
+                const ended = await Subscription.findOneAndUpdate(
+                    { _id: subscription._id, status: 'active', endDate: subscription.endDate },
+                    { $set: { status: 'expired' } },
+                    { new: true }
+                );
+                if (!ended) {
+                    console.warn(`⚠️ Subscription for user ${userId} changed while expiring it (renewed?) — left as it is`);
+                    continue;
+                }
 
                 // 2. Downgrade business profile to free plan (no-op if no Business
                 //    doc). The verified tick goes too, unless KYC approved it.
@@ -122,8 +152,10 @@ export const handleExpiredSubscriptions = async () => {
                     // Don't throw - cache invalidation failure shouldn't block the expiry process
                 }
 
-                // 4. TODO: Send notification to user about subscription expiry
-                // You can implement email/push notification here
+                // 4. Tell the user. Detached and best-effort: it can never fail the
+                //    expiry above. (A Play row never gets here; reconcile ended it
+                //    through persistDeactivation, which does the same.)
+                announcePlanEnded(ended);
 
                 successCount++;
 
@@ -156,45 +188,97 @@ export const handleExpiredSubscriptions = async () => {
 };
 
 /**
- * Helper function to send subscription expiry reminders
- * Sends reminders 7 days, 3 days, and 1 day before expiry
+ * Reminds users whose plan will NOT renew that it is about to end: 7, 3 and 1
+ * calendar days (in India) before the end date, in-app and by push, and by email
+ * at 7 and 1.
+ *
+ * Who is reminded: an active plan that nobody will charge again. That is every
+ * website (Cashfree) plan, which is one paid month, and a Google Play plan whose
+ * renewal the user has switched off. A Play plan that renews is never reminded:
+ * Play itself tells those users, and a "your plan ends" for a plan that is about
+ * to renew would be wrong. A legacy row has no `source` at all, so the query
+ * excludes "Play and renewing" instead of asking for "cashfree".
+ *
+ * Safe to run twice, or from two instances at once: each reminder is claimed with
+ * one atomic update before it is sent (announceEndingSoon), so a re-run, a
+ * restart or a second server sends nothing more. Reminders are keyed by the end
+ * date they counted down to, so a renewal (which moves the end date) starts a
+ * fresh countdown on its own. A run that is missed on the exact day is not made
+ * up the next day: that reminder would say the wrong number of days.
+ *
+ * A Google Play plan we store as cancelled is checked with Play first: the user
+ * may have switched renewal back on without that reaching us, and a "resubscribe
+ * to keep it" for a plan that renews is exactly the message this must never send.
+ * When Play cannot be asked the stored value stands.
+ *
+ * One bad row (a deleted user, a failed write) is logged and skipped; it cannot
+ * stop the rows after it. Rows are worked REMINDER_CONCURRENCY at a time, and a
+ * push or email that hangs is not waited for beyond SUBSCRIPTION_SEND_TIMEOUT_MS (notification.controllers.js).
+ *
+ * [now] exists for tests, which need to run "10:00 IST on the 13th"; the cron
+ * never passes it. Returns a count of what happened, which nothing relies on.
  */
-export const sendExpiryReminders = async () => {
+export const sendExpiryReminders = async ({ now = new Date() } = {}) => {
+    const summary = { due: 0, sent: 0, alreadySent: 0, skipped: 0, failed: 0, renewing: 0 };
+
     try {
+        // One day wider than the largest reminder: at 10:00 a plan that ends late
+        // on the evening of the 7th calendar day is still seven and a half days
+        // away, and the exact count is worked out per row below.
+        const horizon = new Date(now.getTime() + (Math.max(...REMINDER_DAYS) + 1) * DAY_MS);
 
-        const now = new Date();
-        const sevenDaysFromNow = new Date(now.getTime() + (7 * 24 * 60 * 60 * 1000));
-        const threeDaysFromNow = new Date(now.getTime() + (3 * 24 * 60 * 60 * 1000));
-        const oneDayFromNow = new Date(now.getTime() + (1 * 24 * 60 * 60 * 1000));
-
-        // Find subscriptions expiring in 7, 3, or 1 day
-        const upcomingExpiries = await Subscription.find({
+        const upcoming = await Subscription.find({
             status: 'active',
-            endDate: {
-                $gte: now,
-                $lte: sevenDaysFromNow
+            endDate: { $gt: now, $lte: horizon },
+            $nor: [{ source: 'google_play', autoRenew: true }]
+        });
+
+        const remind = async (subscription) => {
+            try {
+                const daysLeft = istDaysUntil(subscription.endDate, now);
+                if (!REMINDER_DAYS.includes(daysLeft)) return;
+                if (subscription.source === 'google_play' && subscription.autoRenew === true) return;
+
+                // Only asked of Play for a day a reminder is due, so this is a
+                // handful of calls a day, not one per Play subscriber.
+                if (subscription.source === 'google_play') {
+                    const { playConfirmsRenewal } = await import('../controllers/subscription/googlePlay.js');
+                    const renews = await settleWithin(
+                        playConfirmsRenewal(subscription),
+                        PLAY_CHECK_TIMEOUT_MS,
+                        () => console.warn(`⚠️ Google Play did not answer for user ${subscription.userId} in ${PLAY_CHECK_TIMEOUT_MS} ms — reminding on the stored state`)
+                    );
+                    if (renews) {
+                        summary.renewing++;
+                        return;
+                    }
+                }
+
+                summary.due++;
+                const outcome = await announceEndingSoon(subscription, daysLeft);
+                if (outcome === 'sent') summary.sent++;
+                else if (outcome === 'unclaimed') summary.alreadySent++;
+                else if (outcome === 'skipped') summary.skipped++;
+                else summary.failed++;
+            } catch (error) {
+                summary.failed++;
+                console.error(`❌ Expiry reminder failed for user ${subscription.userId}:`, error?.message || error);
             }
-        }).populate('userId', 'username email fullName');
+        };
 
-        if (upcomingExpiries.length === 0) {
-            return;
+        // A few workers draining one queue; remind() never rejects.
+        let next = 0;
+        await Promise.all(Array.from({ length: Math.min(REMINDER_CONCURRENCY, upcoming.length) }, async () => {
+            while (next < upcoming.length) await remind(upcoming[next++]);
+        }));
+
+        if (summary.sent > 0 || summary.failed > 0) {
+            console.log(`📣 Expiry reminders: ${summary.sent} sent, ${summary.alreadySent} already sent, ${summary.skipped} skipped, ${summary.failed} failed`);
         }
-
-
-        for (const subscription of upcomingExpiries) {
-            const daysUntilExpiry = Math.ceil((subscription.endDate - now) / (1000 * 60 * 60 * 24));
-
-            // Send reminder based on days remaining
-            if (daysUntilExpiry === 7 || daysUntilExpiry === 3 || daysUntilExpiry === 1) {
-
-                // TODO: Implement actual notification sending (email/push)
-                // For now, just log it
-            }
-        }
-
-
+        return { success: true, ...summary };
     } catch (error) {
         console.error('❌ Failed to send expiry reminders:', error);
+        return { success: false, error: error.message, ...summary };
     }
 };
 
@@ -212,7 +296,8 @@ export const startSubscriptionExpiryJob = () => {
         timezone: "Asia/Kolkata"
     });
 
-    // Run reminder check every day at 10:00 AM (0 10 * * *)
+    // Run reminder check every day at 10:00 AM (0 10 * * *). Once a day matters:
+    // the reminders count calendar days (see istDaysUntil).
     const reminderJob = cron.schedule('0 10 * * *', async () => {
         console.log('⏰ [Cron] Subscription reminder job triggered');
         await sendExpiryReminders();

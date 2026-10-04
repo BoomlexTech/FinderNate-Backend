@@ -16,6 +16,7 @@
 import Subscription from '../../models/subscription.models.js';
 import { sendAdminAlert } from '../../utils/adminAlert.utils.js';
 import { needsAccountManagerAlert } from '../../utils/accountManager.utils.js';
+import { announceActivation, announcePlanEnded, reopenActivationNotice } from './notices.js';
 
 /** Which Business.plan tier a subscription maps to. */
 export const PLAN_TO_BUSINESS_PLAN = {
@@ -225,9 +226,10 @@ const trimRetiredPlayTokens = async (subscription) => {
 /**
  * A Subscription as clients may see it.
  *
- * The raw document carries three things no client needs and one must never see:
+ * The raw document carries four things no client needs and one must never see:
  * the Play purchase token (a payment credential, as googlePlay.js notes),
- * `redeemedPaymentIds` (the whole replay-guard history) and `retiredPlayTokens`.
+ * `redeemedPaymentIds` (the whole replay-guard history), `retiredPlayTokens` and
+ * `sentNotices` (which plan notices were already sent, see notices.js).
  * Everything else is kept as it was so no client has to change.
  */
 export const toPublicSubscription = (subscription) => {
@@ -238,6 +240,7 @@ export const toPublicSubscription = (subscription) => {
     delete plain.playPurchaseToken;
     delete plain.redeemedPaymentIds;
     delete plain.retiredPlayTokens;
+    delete plain.sentNotices;
     return plain;
 };
 
@@ -280,6 +283,16 @@ export const persistActivation = async ({
     // the row's plan whether or not it was still running; a caller that knows a
     // lapsed row WAS the thing being switched away from uses that one.)
     const previousEntitledPlan = isEntitledNow(subscription) ? subscription.plan : null;
+    // What the notices (notices.js) compare the new row against. Copied out now
+    // because the document is rewritten in place below.
+    const before = {
+        plan: previousPlan || null,
+        status: previousStatus || null,
+        entitledPlan: previousEntitledPlan,
+        token: subscription?.playPurchaseToken || null,
+        pendingPlan: subscription?.pendingPlan || null,
+        pendingPlanAt: subscription?.pendingPlanAt || null
+    };
 
     if (subscription) {
         subscription.plan      = plan;
@@ -348,6 +361,10 @@ export const persistActivation = async ({
         console.error('Cache invalidation error:', cacheError);
     }
 
+    // Last, and detached: the plan is already granted, and telling the user about
+    // it must neither wait for nor be able to fail that. See notices.js.
+    announceActivation(subscription, before);
+
     return { subscription, business, previousEntitledPlan, previousPlan: previousPlan || null };
 };
 
@@ -411,8 +428,12 @@ export const syncBusinessToSubscription = async (subscription) => {
  * ended only if it still has the status and token we read; otherwise somebody
  * else changed it, this is no longer our decision, and null is returned without
  * touching the Business.
+ *
+ * [reason] only shapes the words of the "plan ended" notice: 'on_hold' or
+ * 'paused' when Play ended the plan for that (a failed payment, a pause the user
+ * chose), nothing for a plan that simply ran out. See announcePlanEnded.
  */
-export const persistDeactivation = async ({ subscription, status = 'expired' }) => {
+export const persistDeactivation = async ({ subscription, status = 'expired', reason }) => {
     const ended = await Subscription.findOneAndUpdate(
         {
             _id: subscription._id,
@@ -425,12 +446,18 @@ export const persistDeactivation = async ({ subscription, status = 'expired' }) 
     );
     if (!ended) return null;
 
+    // The plan is over, so the payment it was bought with can announce itself
+    // again if Play ever reports that same order live (see reopenActivationNotice).
+    reopenActivationNotice(ended);
+
     await downgradeBusinessToFree(ended.userId);
 
     // The Business write above is a second step after the row's. If an
     // activation slipped in between the two, put its plan back.
+    let latest = null;
     try {
-        await syncBusinessToSubscription(await Subscription.findOne({ _id: ended._id }));
+        latest = await Subscription.findOne({ _id: ended._id });
+        await syncBusinessToSubscription(latest);
     } catch (syncError) {
         console.error('Could not re-check the Business plan after ending a subscription:', syncError?.message);
     }
@@ -439,6 +466,15 @@ export const persistDeactivation = async ({ subscription, status = 'expired' }) 
         await invalidateCaches(ended.userId);
     } catch (cacheError) {
         console.error('Cache invalidation error:', cacheError);
+    }
+
+    // "Your plan has ended" is only true if it did end and stayed ended: not for a
+    // row that was already over (nothing changed), and not when the activation
+    // that slipped in above has put the user on a plan again (that one is
+    // announced as the new plan). Detached, like every notice; this compare-and-set
+    // already guarantees only one caller gets here for a given ending.
+    if (subscription.status === 'active' && !isEntitledNow(latest)) {
+        announcePlanEnded(ended, reason);
     }
 
     return ended;

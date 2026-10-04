@@ -43,6 +43,11 @@ const ANDROID_CHANNEL_BY_TYPE = {
     contact_request: 'follows',
     contact_request_response: 'follows',
     business_verification: 'follows',
+    // Created by the app's LocalNotificationsService.subscriptionChannel. Its own
+    // channel, not 'follows': someone who muted follows to silence social noise
+    // must still hear that their plan is about to end. A build that predates the
+    // channel falls back to FCM's default channel.
+    subscription: 'subscription',
     incoming_call: 'calls',
     call_ended: 'calls',
     call_accepted: 'calls',
