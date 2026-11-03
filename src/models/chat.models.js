@@ -35,6 +35,35 @@ const ChatSchema = new mongoose.Schema({
         ref: 'User',
         required: true
     },
+    // 👑 Group owner (Phase 3 #21). Groups created before this field existed
+    // use createdBy; see utils/chatRoles.rules.js effectiveOwnerId().
+    ownerId: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'User'
+    },
+    // When each member joined, so ownership can pass to the longest-serving
+    // admin or member when the owner leaves.
+    memberSince: [{
+        _id: false,
+        userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+        joinedAt: { type: Date, default: Date.now },
+        addedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
+    }],
+
+    // ⏳ Disappearing messages (Phase 3 #37). 0 = off; otherwise new messages
+    // expire this many seconds after they're sent (24 hours, 7 days, 90 days).
+    disappearing: {
+        seconds: { type: Number, default: 0 },
+        updatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+        updatedAt: Date
+    },
+
+    // 🔒 End-to-end encryption (Phase 3 #2). Set the first time an encrypted
+    // message is sent in a direct chat.
+    e2ee: {
+        enabled: { type: Boolean, default: false },
+        since: Date
+    },
 
     // 💬 Messages are now stored in separate Message model
     // Reference to last message for quick access

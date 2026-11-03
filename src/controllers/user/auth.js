@@ -1,4 +1,5 @@
 import { asyncHandler } from "../../utils/asyncHandler.js";
+import UserDevice from "../../models/userDevice.models.js";
 import { User } from "../../models/user.models.js";
 import { ApiError } from "../../utils/ApiError.js";
 import { ApiResponse } from "../../utils/ApiResponse.js";
@@ -587,6 +588,12 @@ const logOutUser = asyncHandler(async (req, res) => {
     }
 
     const cleared = await User.findOneAndUpdate(filter, update, { new: true });
+
+    // Device register (Phase 3 #25): this account stops getting this device's
+    // notifications; other accounts on the same phone keep theirs.
+    if (deviceToken) {
+        await UserDevice.deleteOne({ userId: req.user._id, token: deviceToken }).catch(() => {});
+    }
 
     // The filtered update above matches nothing when the token was not this
     // user's (or none was sent), so refreshToken would go uncleared too. Run

@@ -11,6 +11,7 @@ import { startStoryExpiryJob } from './jobs/storyExpiry.job.js';
 import { startBinPurgeJob } from './jobs/binPurge.job.js';
 import { startTrendingJobs } from './jobs/trending.job.js';
 import { startEmailDigestJob } from './jobs/emailDigest.job.js';
+import { startChatExpiryJob } from './jobs/chatExpiry.job.js';
 import { startLikeWorker } from './queues/likeQueue.js';
 // import { seedLikesToRedis } from './scripts/seedLikesToRedis.js';
 import { redisClient } from './config/redis.config.js';
@@ -88,6 +89,7 @@ connectDB()
             startBinPurgeJob();
             startTrendingJobs();
             startEmailDigestJob();
+            startChatExpiryJob();
             startLikeWorker();
         });
 

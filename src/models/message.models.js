@@ -19,7 +19,8 @@ const MessageSchema = new mongoose.Schema({
     },
     messageType: {
         type: String,
-        enum: ['text', 'image', 'video', 'file', 'audio', 'location', 'payment_link', 'checkout', 'order_update', 'call', 'contact_seller', 'story_reply', 'shared_post'],
+        // Phase 3: system (group events), gif and sticker (#7), encrypted (#2).
+        enum: ['text', 'image', 'video', 'file', 'audio', 'location', 'payment_link', 'checkout', 'order_update', 'call', 'contact_seller', 'story_reply', 'shared_post', 'system', 'gif', 'sticker', 'encrypted'],
         default: 'text'
     },
     mediaUrl: String,
@@ -156,6 +157,65 @@ const MessageSchema = new mongoose.Schema({
         currency: String,
         capturedAt: Date,
     },
+    // 🛎 Group events (Phase 3 #21): "Asha made Ravi an admin". `message`
+    // holds the rendered sentence for clients that don't know this type.
+    system: {
+        action: String,
+        actorId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+        targetIds: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
+        data: mongoose.Schema.Types.Mixed
+    },
+    // 🎞 GIF or sticker (Phase 3 #7). Looked up by id through our GIPHY
+    // proxy; the client never supplies the URLs.
+    gif: {
+        provider: { type: String, default: 'giphy' },
+        id: String,
+        title: String,
+        url: String,
+        mp4Url: String,
+        previewUrl: String,
+        width: Number,
+        height: Number
+    },
+    // ⏳ Disappearing messages (Phase 3 #37): when this message is removed.
+    expiresAt: { type: Date, default: null },
+    // 👁 View-once photo or video (Phase 3 #48). The media link is only handed
+    // out by the open endpoint, once per recipient.
+    viewOnce: { type: Boolean, default: false },
+    viewOnceOpenedBy: [{
+        _id: false,
+        userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+        openedAt: Date
+    }],
+    // When the media file is due to be deleted (shortly after opening, or
+    // 14 days after sending if never opened). Cleared once it's gone.
+    viewOnceMediaDeleteAt: { type: Date, default: null },
+    viewOnceExpired: { type: Boolean, default: false },
+    // 🔒 End-to-end encrypted payload (Phase 3 #2). The server cannot read
+    // it; see utils/e2ee.rules.js for the format.
+    e2ee: {
+        type: {
+            _id: false,
+            v: Number,
+            alg: String,
+            senderDeviceId: String,
+            ephemeralPublicKey: String,
+            nonce: String,
+            ciphertext: String,
+            signature: String,
+            keys: [{
+                _id: false,
+                userId: String,
+                deviceId: String,
+                nonce: String,
+                wrappedKey: String
+            }]
+        },
+        default: undefined
+    },
+    // Links to this message's encrypted attachments (ciphertext only), so
+    // they can be deleted when the message disappears or is opened once.
+    e2eeBlobUrls: { type: [String], default: undefined },
     // 📤 Forwarding support
     forwardedFrom: {
         messageId: {
@@ -272,6 +332,8 @@ MessageSchema.index({ chatId: 1, 'deliveryStatus.userId': 1, 'deliveryStatus.sta
 MessageSchema.index({ chatId: 1, deletedForEveryone: 1 }); // For deleted messages filtering
 MessageSchema.index({ chatId: 1, isPinned: 1, pinnedAt: -1 }); // For pinned messages queries
 MessageSchema.index({ chatId: 1, isForwarded: 1 }); // For forwarded messages queries
+MessageSchema.index({ expiresAt: 1 }, { partialFilterExpression: { expiresAt: { $type: 'date' } } }); // Disappearing messages purge
+MessageSchema.index({ viewOnceMediaDeleteAt: 1 }, { partialFilterExpression: { viewOnceMediaDeleteAt: { $type: 'date' } } }); // View-once media purge
 
 // Virtual for unread status (per user)
 MessageSchema.virtual('isUnread').get(function () {

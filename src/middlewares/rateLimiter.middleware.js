@@ -423,3 +423,17 @@ export const healthCheckRateLimit = rateLimit({
     passOnStoreError: true,
     store: new RedisStore({ prefix: 'rl:health:', windowMs: 1 * 60 * 1000 })
 });
+
+// Downloads of a user's PIN-encrypted E2EE key backup (Phase 3 #2): 10 an
+// hour per account, so a stolen session can't be used to try PINs quickly.
+// Keyed on the signed-in user (verifyJWT runs first).
+export const e2eeBackupReadRateLimit = rateLimit({
+    windowMs: 60 * 60 * 1000,
+    max: 10,
+    keyGenerator: (req) => String(req.user?._id),
+    message: { success: false, message: 'Too many backup requests. Try again in an hour.', data: null },
+    standardHeaders: true,
+    legacyHeaders: false,
+    passOnStoreError: true,
+    store: new RedisStore({ prefix: 'rl:e2ee-backup:', windowMs: 60 * 60 * 1000 })
+});

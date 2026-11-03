@@ -35,6 +35,18 @@ const ReportSchema = new mongoose.Schema({
         type: String,
         trim: true
     },
+    // Messages the reporter chose to attach when reporting someone from an
+    // end-to-end encrypted chat (Phase 3 #2). The server can't read encrypted
+    // chats, so these copies, sent by the reporter's device, are the evidence.
+    attachedMessages: [{
+        _id: false,
+        messageId: { type: mongoose.Schema.Types.ObjectId, ref: 'Message' },
+        chatId: { type: mongoose.Schema.Types.ObjectId, ref: 'Chat' },
+        senderId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+        text: { type: String, maxlength: 2000 },
+        mediaUrl: String,
+        sentAt: Date
+    }],
     status: {
         type: String,
         // under_review: enough reports have accumulated that this is queued for

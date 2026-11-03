@@ -1,6 +1,6 @@
 import admin, { getMessaging } from "../config/firebase-admin.config.js";
-import { User } from "../models/user.models.js";
 import { sendPushNotification as sendWebPush } from "../controllers/pushNotification.controllers.js";
+import { getPushTargets, dropDeadToken, titleFor } from "./pushTargets.service.js";
 
 /**
  * One place that turns "this user should be told about X" into an actual push.
@@ -176,32 +176,30 @@ export const deliverPush = async (userIds, { title, body, type, data = {}, url }
         // which is the normal state on a local dev box.
         if (!admin.apps.length) return;
 
-        // `$nin: [null, '']` also excludes documents with no fcmToken field at
-        // all, so a user who has never registered a device is simply not in the
-        // result set — no empty-token send, no bogus "invalid token" log.
-        const recipients = await User.find({
-            _id: { $in: ids },
-            fcmToken: { $nin: [null, ''] },
-        }).select('fcmToken').lean();
+        // Every device of every recipient (Phase 3 #25): the device register
+        // plus the old single User.fcmToken. A phone holding several accounts
+        // gets one push per account, each naming the account it's for.
+        const targets = await getPushTargets(ids);
+        if (targets.length === 0) return;
 
-        if (recipients.length === 0) return;
-
-        await Promise.allSettled(recipients.map(async (recipient) => {
+        await Promise.allSettled(targets.map(async (target) => {
             try {
-                await sendFcmToToken(recipient.fcmToken, { title, body, type, data });
+                await sendFcmToToken(target.token, {
+                    title: titleFor(title, target),
+                    body,
+                    type,
+                    data: { ...data, accountId: target.userId, accountUsername: target.username },
+                });
             } catch (error) {
                 if (isDeadTokenError(error)) {
                     // The device uninstalled, or Firebase rotated the token and
                     // the app has not re-registered. Clearing it stops us
                     // pushing into a black hole on every future event, and the
                     // app re-registers on its next launch.
-                    await User.updateOne(
-                        { _id: recipient._id, fcmToken: recipient.fcmToken },
-                        { $set: { fcmToken: null, fcmTokenUpdatedAt: new Date() } }
-                    ).catch(() => { });
+                    await dropDeadToken(target.userId, target.token);
                     return;
                 }
-                console.warn(`[push] FCM send failed for ${recipient._id}: ${error?.message}`);
+                console.warn(`[push] FCM send failed for ${target.userId}: ${error?.message}`);
             }
         }));
     } catch (error) {

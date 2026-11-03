@@ -24,6 +24,16 @@ import {
     removeGroupMember,
     leaveGroup,
     deleteGroup,
+    // Phase 3
+    getGroupMembers,
+    addGroupMembers,
+    blockGroupMember,
+    unblockGroupMember,
+    makeGroupAdmin,
+    removeGroupAdmin,
+    transferGroupOwnership,
+    setDisappearingMessages,
+    openViewOnceMessage,
     // Enhanced messaging features
     addReaction,
     removeReaction,
@@ -66,13 +76,25 @@ router.patch('/:chatId/group-image', upload.single('groupImage'), updateGroupIma
 // Rename a group (admins only)
 router.patch('/:chatId/group-name', updateGroupName);
 
-// Remove another participant from a group (admins only)
+// Group members and roles (Phase 3 #21). Owner/Admin/Member permissions are
+// in utils/chatRoles.rules.js.
+router.get('/:chatId/members', getGroupMembers);
+router.post('/:chatId/members', addGroupMembers);
+// Remove someone (owner or admin; only the owner can remove an admin). ?block=true also blocks.
 router.delete('/:chatId/members/:memberId', removeGroupMember);
+router.post('/:chatId/blocked/:memberId', blockGroupMember);
+router.delete('/:chatId/blocked/:memberId', unblockGroupMember);
+router.post('/:chatId/admins/:memberId', makeGroupAdmin);
+router.delete('/:chatId/admins/:memberId', removeGroupAdmin);
+router.post('/:chatId/owner', transferGroupOwnership);
+
+// Disappearing messages timer (Phase 3 #37)
+router.patch('/:chatId/disappearing', setDisappearingMessages);
 
 // Leave a group (any participant, including the creator)
 router.post('/:chatId/leave', leaveGroup);
 
-// Delete an entire group (admins only) — destroys it for every member
+// Delete an entire group (owner only) — destroys it for every member
 router.delete('/:chatId', deleteGroup);
 
 // Get messages for a chat
@@ -89,6 +111,9 @@ router.patch('/:chatId/read', markMessagesRead);
 
 // Mark all messages in a chat as read
 router.patch('/:chatId/read-all', markChatAsRead);
+
+// Open a view-once photo or video, once (Phase 3 #48)
+router.post('/:chatId/messages/:messageId/view-once', openViewOnceMessage);
 
 // Delete a message for everyone (24-hour limit)
 router.delete('/:chatId/messages/:messageId', deleteMessageForEveryone);

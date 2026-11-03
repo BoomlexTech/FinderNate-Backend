@@ -2,6 +2,7 @@ import { asyncHandler } from "../utils/asyncHandler.js";
 import { ApiResponse } from "../utils/ApiResponse.js";
 import { ApiError } from "../utils/ApiError.js";
 import PushSubscription from "../models/pushSubscription.models.js";
+import { User } from "../models/user.models.js";
 import webpush from 'web-push';
 
 // Lazy initialization flag
@@ -31,24 +32,29 @@ export const subscribeToPush = asyncHandler(async (req, res) => {
   }
 
   try {
-    // Check if subscription already exists for this user
-    let existingSubscription = await PushSubscription.findOne({ userId });
+    // One subscription per browser, not per account (Phase 3 #25): an
+    // account signed in on two browsers gets notifications on both, and one
+    // browser can hold several accounts. Keyed on (userId, endpoint).
+    const existingSubscription = await PushSubscription.findOneAndUpdate(
+      { userId, endpoint: subscription.endpoint },
+      {
+        $set: {
+          p256dh: subscription.keys.p256dh,
+          auth: subscription.keys.auth,
+          isActive: true
+        }
+      },
+      { upsert: true, new: true, setDefaultsOnInsert: true }
+    );
 
-    if (existingSubscription) {
-      // Update existing subscription
-      existingSubscription.endpoint = subscription.endpoint;
-      existingSubscription.p256dh = subscription.keys.p256dh;
-      existingSubscription.auth = subscription.keys.auth;
-      existingSubscription.updatedAt = new Date();
-      await existingSubscription.save();
-    } else {
-      // Create new subscription
-      existingSubscription = await PushSubscription.create({
-        userId,
-        endpoint: subscription.endpoint,
-        p256dh: subscription.keys.p256dh,
-        auth: subscription.keys.auth
-      });
+    // Keep the 10 most recent browsers per account.
+    const stale = await PushSubscription.find({ userId })
+      .sort({ updatedAt: -1 })
+      .skip(10)
+      .select('_id')
+      .lean();
+    if (stale.length) {
+      await PushSubscription.deleteMany({ _id: { $in: stale.map(s => s._id) } });
     }
 
     return res.status(200).json(
@@ -99,8 +105,18 @@ export const sendPushNotification = async (userIds, notificationData) => {
       return;
     }
 
+    // Which account each notification is for (Phase 3 #25): one browser can
+    // hold several signed-in accounts, and tapping should open the right one.
+    const owners = await User.find({ _id: { $in: [...new Set(subscriptions.map(s => String(s.userId)))] } })
+      .select('username').lean();
+    const usernameOf = new Map(owners.map(u => [String(u._id), u.username]));
+    const endpointsShared = subscriptions.reduce((acc, s) => {
+      acc[s.endpoint] = (acc[s.endpoint] || 0) + 1;
+      return acc;
+    }, {});
+
     // Prepare notification payload
-    const payload = JSON.stringify({
+    const basePayload = ({
       title: notificationData.title,
       body: notificationData.body,
       icon: notificationData.icon || '/Findernate.ico',
@@ -112,6 +128,17 @@ export const sendPushNotification = async (userIds, notificationData) => {
       senderId: notificationData.senderId,
       timestamp: Date.now()
     });
+    const payloadFor = (sub) => {
+      const accountUsername = usernameOf.get(String(sub.userId)) || '';
+      // A browser signed in to several accounts gets "· @username" in the title.
+      const shared = (endpointsShared[sub.endpoint] || 0) > 1;
+      return JSON.stringify({
+        ...basePayload,
+        title: shared && accountUsername ? `${basePayload.title} · @${accountUsername}` : basePayload.title,
+        accountId: String(sub.userId),
+        accountUsername
+      });
+    };
 
     // Send notifications to all subscriptions
     const notificationPromises = subscriptions.map(async (sub) => {
@@ -124,7 +151,7 @@ export const sendPushNotification = async (userIds, notificationData) => {
           }
         };
 
-        await webpush.sendNotification(pushSubscription, payload);
+        await webpush.sendNotification(pushSubscription, payloadFor(sub));
       } catch (error) {
         console.error(`Failed to send push notification to user ${sub.userId}:`, error);
 

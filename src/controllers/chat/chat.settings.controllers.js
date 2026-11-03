@@ -8,6 +8,7 @@ import { safeEmitToChat, safeEmitToUser, MUTE_DURATIONS, muteFieldsFor } from '.
 import mongoose from 'mongoose';
 import { redisClient } from '../../config/redis.config.js';
 import { uploadBufferToBunny } from '../../utils/bunny.js';
+import { checkGroupPermission } from '../../utils/chatRoles.rules.js';
 
 export const updateChatTheme = asyncHandler(async (req, res) => {
     const currentUserId = req.user._id;
@@ -76,10 +77,9 @@ export const updateGroupImage = asyncHandler(async (req, res) => {
         throw new ApiError(400, 'Only group chats have a group image');
     }
 
-    const isAdmin = (chat.admins || []).some(a => String(a) === String(currentUserId))
-        || String(chat.createdBy) === String(currentUserId);
-    if (!isAdmin) {
-        throw new ApiError(403, 'Only group admins can change the group image');
+    // Owner or admin (Phase 3 #21).
+    if (checkGroupPermission(chat, currentUserId, 'edit_info')) {
+        throw new ApiError(403, 'Only the group owner and admins can change the group image');
     }
 
     //* Explicit removal: { groupImage: null } with no file attached.
@@ -143,10 +143,9 @@ export const updateGroupName = asyncHandler(async (req, res) => {
         throw new ApiError(400, 'Only group chats can be renamed');
     }
 
-    const isAdmin = (chat.admins || []).some(a => String(a) === String(currentUserId))
-        || String(chat.createdBy) === String(currentUserId);
-    if (!isAdmin) {
-        throw new ApiError(403, 'Only group admins can rename the group');
+    // Owner or admin (Phase 3 #21).
+    if (checkGroupPermission(chat, currentUserId, 'edit_info')) {
+        throw new ApiError(403, 'Only the group owner and admins can rename the group');
     }
 
     if (!groupName || !groupName.trim()) {

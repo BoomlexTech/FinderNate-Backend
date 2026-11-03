@@ -1,4 +1,5 @@
 import Call from '../models/call.models.js';
+import { getPushTargets, sendFcmToTargets } from '../services/pushTargets.service.js';
 import Chat from '../models/chat.models.js';
 import Message from '../models/message.models.js';
 import { User } from '../models/user.models.js';
@@ -7,7 +8,6 @@ import { ApiResponse } from '../utils/ApiResponse.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 import socketManager from '../config/socket.js';
 import mongoose from 'mongoose';
-import { sendNotification } from '../config/firebase-admin.config.js';
 import { isBlockedBetween } from '../middlewares/blocking.middleware.js';
 
 // Constants for call management
@@ -289,65 +289,26 @@ export const initiateCall = asyncHandler(async (req, res) => {
 
         // Send FCM push notification to receiver (fire-and-forget, non-blocking)
 
-        let fcmSent = false;
-
-        if (receiver.fcmToken) {
-
-            // Don't await - fire and forget to avoid blocking the response
-            (async () => {
-                try {
-
-                    const notification = {
-                        title: `Incoming ${callType} call`,
-                        body: `${req.user.fullName || req.user.username} is calling you...`
-                    };
-
-                    const data = {
-                        type: 'incoming_call',
-                        callId: newCall._id.toString(),
-                        callerId: currentUserId.toString(),
-                        callerName: req.user.fullName || req.user.username,
-                        callerImage: req.user.profileImageUrl || '',
-                        chatId: chatId.toString(),
-                        callType: callType,
-                        status: 'ringing' // Include status so receiver knows call is ringing
-                    };
-
-                    const fcmResult = await sendNotification(receiver.fcmToken, notification, data);
-
-                    if (fcmResult.success) {
-                    } else {
-                        console.error('❌ FCM notification failed!');
-                        console.error('❌ Error message:', fcmResult.error);
-                        console.error('❌ Error code:', fcmResult.errorCode);
-                        console.error('❌ Invalid token:', fcmResult.invalidToken);
-
-                        // If token is invalid, remove it from user
-                        if (fcmResult.invalidToken) {
-                            await User.findByIdAndUpdate(receiverId, {
-                                fcmToken: null,
-                                fcmTokenUpdatedAt: null
-                            }).catch(err => console.error('Error removing FCM token:', err));
-                        }
-                    }
-                } catch (fcmError) {
-                    console.error('❌ FCM notification exception caught!');
-                    console.error('❌ Exception message:', fcmError.message);
-                    console.error('❌ Exception code:', fcmError.code);
-                    console.error('❌ Exception stack:', fcmError.stack);
+        // Ring every device the receiver is signed in on, including phones
+        // that hold several accounts (Phase 3 #25). Fire and forget.
+        (async () => {
+            const targets = await getPushTargets([receiverId]);
+            if (!targets.length) return;
+            await sendFcmToTargets(targets, {
+                title: `Incoming ${callType} call`,
+                body: `${req.user.fullName || req.user.username} is calling you...`,
+                type: 'incoming_call',
+                data: {
+                    callId: newCall._id.toString(),
+                    callerId: currentUserId.toString(),
+                    callerName: req.user.fullName || req.user.username,
+                    callerImage: req.user.profileImageUrl || '',
+                    chatId: chatId.toString(),
+                    callType: callType,
+                    status: 'ringing' // Include status so receiver knows call is ringing
                 }
-            })().catch(err => {
-                // Catch any unhandled promise rejections in the IIFE
-                console.error('❌ CRITICAL: Unhandled FCM promise rejection!');
-                console.error('❌ Error:', err);
             });
-        } else {
-            console.warn('⚠️ No FCM token found for receiver:', {
-                receiverId: receiver._id,
-                receiverUsername: receiver.username,
-                fcmTokenExists: !!receiver.fcmToken
-            });
-        }
+        })().catch(err => console.error('Incoming call push failed:', err?.message || err));
 
         // Emit call initiation via socket (as backup or if FCM failed)
         if (socketManager.isReady()) {
@@ -376,12 +337,7 @@ export const initiateCall = asyncHandler(async (req, res) => {
             const receiverIdStr = receiverId.toString();
             socketManager.emitToUser(receiverIdStr, 'incoming_call', callData);
         } else {
-            console.error('❌ Socket manager not ready - cannot emit incoming_call event');
-
-            // If FCM also failed and socket is not ready, this is a problem
-            if (!fcmSent) {
-                console.error('❌ CRITICAL: Both FCM and Socket failed - receiver will not get notification');
-            }
+            console.error('❌ Socket manager not ready - cannot emit incoming_call event; relying on the push');
         }
 
         // Create a call message in the chat (non-blocking, fire-and-forget)

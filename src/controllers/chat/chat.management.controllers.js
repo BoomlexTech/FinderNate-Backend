@@ -7,6 +7,8 @@ import mongoose from 'mongoose';
 import socketManager from '../../config/socket.js';
 import { redisClient } from '../../config/redis.config.js';
 import { safeEmitToChat, safeEmitToUser, checkFollowStatus, assertNotBlockedInChat, getBlockedParticipantIds, muteFieldsFor } from './helpers.js';
+import { roleOf, effectiveOwnerId, checkGroupPermission, notExpiredFilter, previewLabel, joinedAtOf, MAX_GROUP_MEMBERS } from '../../utils/chatRoles.rules.js';
+import { postSystemMessage } from '../../utils/chatSystem.utils.js';
 
 export const createChat = asyncHandler(async (req, res) => {
     const currentUserId = req.user._id;
@@ -139,9 +141,21 @@ export const createChat = asyncHandler(async (req, res) => {
         if (!groupName) {
             throw new ApiError(400, 'Group name is required for group chats');
         }
+        if (validParticipants.length > MAX_GROUP_MEMBERS) {
+            throw new ApiError(400, `Groups can have up to ${MAX_GROUP_MEMBERS} members`);
+        }
         chatData.groupName = groupName;
         chatData.groupDescription = groupDescription;
         chatData.admins = [currentUserId];
+        // Phase 3 #21: the creator owns the group; join times decide who
+        // takes over if the owner leaves.
+        chatData.ownerId = currentUserId;
+        const joinedAt = new Date();
+        chatData.memberSince = validParticipants.map(id => ({
+            userId: id,
+            joinedAt,
+            addedBy: currentUserId
+        }));
     }
 
     if (productContext) {
@@ -149,6 +163,15 @@ export const createChat = asyncHandler(async (req, res) => {
     }
 
     const chat = await Chat.create(chatData);
+
+    if (chatType === 'group') {
+        // "Asha created the group". Also gives the group a last message, so it
+        // shows in everyone's chat list straight away.
+        const others = validParticipants.filter(id => id.toString() !== currentUserId.toString());
+        await postSystemMessage(chat, 'group_created', { actorId: currentUserId });
+        await postSystemMessage(chat, 'members_added', { actorId: currentUserId, targetIds: others });
+    }
+
     const populatedChat = await Chat.findById(chat._id)
         .populate('participants', 'username fullName profileImageUrl')
         .populate('createdBy', 'username fullName profileImageUrl');
@@ -279,12 +302,20 @@ export const getUserChats = asyncHandler(async (req, res) => {
 
     const chatIds = deduplicatedChats.map(chat => chat._id);
 
+    const now = new Date();
+    // Group members see messages from when they joined (#21).
+    const joinedAtByChat = new Map(deduplicatedChats
+        .filter(chat => chat.chatType === 'group')
+        .map(chat => [chat._id.toString(), joinedAtOf(chat, currentUserId)])
+        .filter(([, at]) => at));
     const lastMessagesPromises = chatIds.map(chatId =>
         Message.findOne({
             chatId,
             $and: [
                 { deletedForEveryone: { $ne: true } },
-                { 'deletedFor.userId': { $ne: userObjectId } }
+                { 'deletedFor.userId': { $ne: userObjectId } },
+                notExpiredFilter(now),
+                ...(joinedAtByChat.has(chatId.toString()) ? [{ timestamp: { $gte: joinedAtByChat.get(chatId.toString()) } }] : [])
             ]
         })
             .sort({ timestamp: -1 })
@@ -295,14 +326,25 @@ export const getUserChats = asyncHandler(async (req, res) => {
 
     const lastMessageMap = lastMessages.reduce((acc, message, index) => {
         if (message) {
-            acc[chatIds[index].toString()] = {
-                message,
-                lastMessage: {
-                    sender: message.sender,
-                    message: message.message,
-                    timestamp: message.timestamp
-                }
+            const plain = message.toObject ? message.toObject() : message;
+            const last = {
+                sender: message.sender,
+                message: message.message,
+                messageType: message.messageType,
+                timestamp: message.timestamp
             };
+            // Phase 3: never leak a view-once link through the list, and give
+            // encrypted messages their envelope so the device can show a
+            // real preview (#2, #48).
+            if (plain.viewOnce) {
+                last.viewOnce = true;
+                last.message = previewLabel(plain.messageType, { viewOnce: true });
+            } else if (plain.messageType === 'encrypted' && plain.e2ee) {
+                last.e2ee = plain.e2ee;
+            } else if (['gif', 'sticker'].includes(plain.messageType)) {
+                last.message = previewLabel(plain.messageType);
+            }
+            acc[chatIds[index].toString()] = { message, lastMessage: last };
         }
         return acc;
     }, {});
@@ -313,10 +355,26 @@ export const getUserChats = asyncHandler(async (req, res) => {
                 chatId: { $in: chatIds },
                 $and: [
                     { deletedForEveryone: { $ne: true } },
-                    { 'deletedFor.userId': { $ne: userObjectId } }
+                    { 'deletedFor.userId': { $ne: userObjectId } },
+                    notExpiredFilter(now)
                 ]
             }
         },
+        ...(joinedAtByChat.size ? [{
+            $match: {
+                $expr: {
+                    $gte: ['$timestamp', {
+                        $switch: {
+                            branches: [...joinedAtByChat].map(([id, at]) => ({
+                                case: { $eq: ['$chatId', new mongoose.Types.ObjectId(id)] },
+                                then: at
+                            })),
+                            default: new Date(0)
+                        }
+                    }]
+                }
+            }
+        }] : []),
         {
             $group: {
                 _id: '$chatId',
@@ -424,6 +482,14 @@ export const getUserChats = asyncHandler(async (req, res) => {
         chatWithUsers.stats.totalMessages = messageCountMap[chatId] || 0;
         chatWithUsers.stats.totalParticipants = chatWithUsers.participants.length;
         chatWithUsers.unreadCount = unreadCountMap[chatId] || 0;
+
+        // Group roles (#21): who owns it and what the caller can do.
+        if (chat.chatType === 'group') {
+            chatWithUsers.ownerId = effectiveOwnerId(chat);
+            chatWithUsers.myRole = roleOf(chat, currentUserId);
+        }
+        delete chatWithUsers.memberSince;
+        delete chatWithUsers.blockedUsers;
 
         // The caller's own mute state only (#38); other people's mutes stay private.
         Object.assign(chatWithUsers, muteFieldsFor(chat, currentUserId));
@@ -547,122 +613,8 @@ export const declineChatRequest = asyncHandler(async (req, res) => {
 });
 
 /**
- * Removes another participant from a group. Admin-only.
- *
- * The group had a member list with Admin/Creator badges and no way to act on
- * it — no route existed to remove anyone, on either client. This is that
- * route; the creator is exempt (they can only leave, via leaveGroup below,
- * which promotes a replacement admin) so a group can never end up with no one
- * able to manage it.
- */
-export const removeGroupMember = asyncHandler(async (req, res) => {
-    const currentUserId = req.user._id;
-    const { chatId, memberId } = req.params;
-
-    const chat = await Chat.findOne({ _id: chatId, participants: currentUserId });
-    if (!chat) {
-        throw new ApiError(404, 'Chat not found or you are not a participant');
-    }
-    if (chat.chatType !== 'group') {
-        throw new ApiError(400, 'Only group chats have members to remove');
-    }
-
-    const isAdmin = (chat.admins || []).some(a => String(a) === String(currentUserId))
-        || String(chat.createdBy) === String(currentUserId);
-    if (!isAdmin) {
-        throw new ApiError(403, 'Only group admins can remove members');
-    }
-
-    if (String(memberId) === String(currentUserId)) {
-        throw new ApiError(400, 'Use "Leave group" to remove yourself');
-    }
-    if (String(memberId) === String(chat.createdBy)) {
-        throw new ApiError(403, 'The group creator cannot be removed');
-    }
-    if (!chat.participants.some(p => String(p) === String(memberId))) {
-        throw new ApiError(404, 'That user is not a member of this group');
-    }
-
-    chat.participants = chat.participants.filter(p => String(p) !== String(memberId));
-    chat.admins = (chat.admins || []).filter(a => String(a) !== String(memberId));
-    chat.stats = chat.stats || {};
-    chat.stats.totalParticipants = chat.participants.length;
-    await chat.save();
-
-    const populatedChat = await Chat.findById(chat._id)
-        .populate('participants', 'username fullName profileImageUrl')
-        .populate('createdBy', 'username fullName profileImageUrl');
-
-    const removedBy = {
-        _id: currentUserId,
-        username: req.user.username,
-        fullName: req.user.fullName
-    };
-
-    //* To the remaining members, so their member list updates without a refetch.
-    safeEmitToChat(chatId, 'group_member_removed', { chatId, memberId, removedBy });
-    //* Direct to the removed member too — they are no longer in the chat room
-    //* (their existing socket connection stays joined to it until they next
-    //* reconnect, but they can no longer fetch this chat's messages or member
-    //* list via the API, since both require participants membership), so
-    //* emitToChat above would never reach them.
-    safeEmitToUser(memberId, 'removed_from_group', { chatId, groupName: chat.groupName, removedBy });
-
-    return res.status(200).json(
-        new ApiResponse(200, populatedChat, 'Member removed successfully')
-    );
-});
-
-/**
- * Leaves a group. Any participant, including the creator, may call this.
- *
- * If the leaver was the last admin, the longest-standing remaining member is
- * promoted so the group is never left with nobody able to manage it. If the
- * leaver was the last participant, the chat is kept (empty, inactive) rather
- * than deleted — consistent with how the rest of this app never hard-deletes
- * a record just because it became empty.
- */
-export const leaveGroup = asyncHandler(async (req, res) => {
-    const currentUserId = req.user._id;
-    const { chatId } = req.params;
-
-    const chat = await Chat.findOne({ _id: chatId, participants: currentUserId });
-    if (!chat) {
-        throw new ApiError(404, 'Chat not found or you are not a participant');
-    }
-    if (chat.chatType !== 'group') {
-        throw new ApiError(400, 'Only group chats can be left');
-    }
-
-    chat.participants = chat.participants.filter(p => String(p) !== String(currentUserId));
-    chat.admins = (chat.admins || []).filter(a => String(a) !== String(currentUserId));
-
-    let promoted = null;
-    if (chat.admins.length === 0 && chat.participants.length > 0) {
-        promoted = chat.participants[0];
-        chat.admins = [promoted];
-    }
-
-    chat.stats = chat.stats || {};
-    chat.stats.totalParticipants = chat.participants.length;
-    await chat.save();
-
-    const leftBy = {
-        _id: currentUserId,
-        username: req.user.username,
-        fullName: req.user.fullName
-    };
-
-    safeEmitToChat(chatId, 'group_member_left', { chatId, leftBy, promotedAdminId: promoted });
-
-    return res.status(200).json(
-        new ApiResponse(200, { chatId, promotedAdminId: promoted }, 'You have left the group')
-    );
-});
-
-/**
  * Deletes an entire group — destroys it for every member, not just the caller.
- * Admin-only (same admin check as removeGroupMember).
+ * Owner only (Phase 3 #21).
  *
  * Unlike leaveGroup, which keeps an emptied-out chat around rather than
  * hard-deleting it, this is an explicit, admin-initiated destruction of the
@@ -680,10 +632,10 @@ export const deleteGroup = asyncHandler(async (req, res) => {
         throw new ApiError(400, 'Only group chats can be deleted this way');
     }
 
-    const isAdmin = (chat.admins || []).some(a => String(a) === String(currentUserId))
-        || String(chat.createdBy) === String(currentUserId);
-    if (!isAdmin) {
-        throw new ApiError(403, 'Only group admins can delete the group');
+    // Owner only (Phase 3 #21). Admins can remove people but not the group.
+    const denied = checkGroupPermission(chat, currentUserId, 'delete_group');
+    if (denied) {
+        throw new ApiError(403, denied);
     }
 
     const participantIds = chat.participants.map(p => p.toString());

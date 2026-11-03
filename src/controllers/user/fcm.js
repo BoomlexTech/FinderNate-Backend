@@ -2,6 +2,7 @@ import { asyncHandler } from "../../utils/asyncHandler.js";
 import { User } from "../../models/user.models.js";
 import { ApiError } from "../../utils/ApiError.js";
 import { ApiResponse } from "../../utils/ApiResponse.js";
+import UserDevice from "../../models/userDevice.models.js";
 
 const saveFCMToken = asyncHandler(async (req, res) => {
     const { fcmToken } = req.body;
@@ -46,6 +47,14 @@ const saveFCMToken = asyncHandler(async (req, res) => {
         await User.updateMany(
             { _id: { $ne: userId }, fcmToken: deviceToken },
             { $set: { fcmToken: null, fcmTokenUpdatedAt: new Date() } }
+        );
+        // This older endpoint means one account per device, so the device
+        // register (Phase 3 #25) must agree. Newer apps use POST /users/me/devices.
+        await UserDevice.deleteMany({ token: deviceToken, userId: { $ne: userId } });
+        await UserDevice.updateOne(
+            { userId, token: deviceToken },
+            { $set: { lastSeenAt: new Date() }, $setOnInsert: { platform: 'other' } },
+            { upsert: true }
         );
     }
 

@@ -4,6 +4,8 @@ import { ApiError } from '../../utils/ApiError.js';
 import { ApiResponse } from '../../utils/ApiResponse.js';
 import { asyncHandler } from '../../utils/asyncHandler.js';
 import { safeEmitToChat, getBlockedParticipantIds } from './helpers.js';
+import { redactViewOnce, expiryFor, notExpiredFilter } from '../../utils/chatRoles.rules.js';
+import { prepareEncryptedMessage } from '../../utils/e2ee.utils.js';
 
 export const addReaction = asyncHandler(async (req, res) => {
     const currentUserId = req.user._id;
@@ -115,10 +117,6 @@ export const editMessage = asyncHandler(async (req, res) => {
     const { chatId, messageId } = req.params;
     const { message: newContent } = req.body;
 
-    if (!newContent || newContent.trim().length === 0) {
-        throw new ApiError(400, 'Message content is required');
-    }
-
     const chat = await Chat.findOne({
         _id: chatId,
         participants: currentUserId
@@ -137,6 +135,35 @@ export const editMessage = asyncHandler(async (req, res) => {
 
     if (!message) {
         throw new ApiError(404, 'Message not found or you are not the sender');
+    }
+
+    if (['system', 'gif', 'sticker'].includes(message.messageType) || message.viewOnce) {
+        throw new ApiError(400, "This message can't be edited");
+    }
+
+    // Encrypted message (Phase 3 #2): the edit is a new envelope.
+    if (message.messageType === 'encrypted') {
+        const age = Date.now() - new Date(message.timestamp).getTime();
+        if (age > 24 * 60 * 60 * 1000) throw new ApiError(400, 'Cannot edit messages older than 24 hours');
+        message.e2ee = await prepareEncryptedMessage(chat, currentUserId, req.body.e2ee);
+        message.editedAt = new Date();
+        message.isEdited = true;
+        await message.save();
+        safeEmitToChat(chatId, 'message_edited', {
+            chatId,
+            messageId,
+            e2ee: message.e2ee,
+            editedAt: message.editedAt,
+            editedBy: { _id: currentUserId, username: req.user.username, fullName: req.user.fullName }
+        });
+        const populatedEncrypted = await Message.findById(messageId)
+            .populate('sender', 'username fullName profileImageUrl')
+            .lean();
+        return res.status(200).json(new ApiResponse(200, populatedEncrypted, 'Message edited successfully'));
+    }
+
+    if (!newContent || newContent.trim().length === 0) {
+        throw new ApiError(400, 'Message content is required');
     }
 
     const messageAge = Date.now() - new Date(message.timestamp).getTime();
@@ -210,6 +237,21 @@ export const forwardMessage = asyncHandler(async (req, res) => {
         throw new ApiError(404, 'Message not found');
     }
 
+    // Phase 3: view-once media can't be forwarded (#48), and the server can't
+    // re-encrypt an encrypted message for someone else (#2) — the app decrypts
+    // it and sends it as a new message instead. System notices aren't messages.
+    if (originalMessage.viewOnce) {
+        throw new ApiError(400, "View-once photos and videos can't be forwarded");
+    }
+    if (originalMessage.messageType === 'encrypted') {
+        const err = new ApiError(400, 'Encrypted messages are forwarded from your device');
+        err.data = { code: 'E2EE_FORWARD_ON_DEVICE' };
+        throw err;
+    }
+    if (originalMessage.messageType === 'system') {
+        throw new ApiError(400, "This message can't be forwarded");
+    }
+
     const forwardedMessages = [];
 
     for (const targetChatId of targetChatIds) {
@@ -252,6 +294,11 @@ export const forwardMessage = asyncHandler(async (req, res) => {
             ...(originalMessage.messageType === 'shared_post' && originalMessage.sharedPost
                 ? { sharedPost: originalMessage.sharedPost }
                 : {}),
+            ...(['gif', 'sticker'].includes(originalMessage.messageType) && originalMessage.gif
+                ? { gif: originalMessage.gif }
+                : {}),
+            // The target chat's disappearing timer applies (#37).
+            expiresAt: expiryFor(targetChat, originalMessage.messageType),
             timestamp: new Date(),
             readBy: [currentUserId],
             deliveryStatus: recipients.map(recipientId => ({
@@ -380,12 +427,15 @@ export const getPinnedMessages = asyncHandler(async (req, res) => {
 
     const pinnedMessages = await Message.find({
         _id: { $in: chat.pinnedMessages },
-        deletedForEveryone: { $ne: true }
+        deletedForEveryone: { $ne: true },
+        $and: [notExpiredFilter()]
     })
         .populate('sender', 'username fullName profileImageUrl')
         .lean();
 
     return res.status(200).json(
-        new ApiResponse(200, { messages: pinnedMessages }, 'Pinned messages fetched successfully')
+        new ApiResponse(200, {
+            messages: pinnedMessages.map(m => (m.viewOnce ? redactViewOnce(m, currentUserId) : m))
+        }, 'Pinned messages fetched successfully')
     );
 });

@@ -6,6 +6,9 @@ import Post from "../models/userPost.models.js";
 import Story from "../models/story.models.js";
 import Comment from "../models/comment.models.js";
 import { User } from "../models/user.models.js";
+import Message from "../models/message.models.js";
+import Chat from "../models/chat.models.js";
+import mongoose from "mongoose";
 
 /** Reports needed before content is queued for an admin to look at. */
 const REPORT_ESCALATION_THRESHOLD = 3;
@@ -17,6 +20,31 @@ const REPORT_ESCALATION_THRESHOLD = 3;
 // could select it, and a moderator could not put a report back into the review
 // queue either. The value has always been in the model enum.
 const REPORT_STATUSES = ['pending', 'under_review', 'reviewed', 'resolved', 'dismissed'];
+
+const verifiedAttachments = async (reporterId, reportedId, items) => {
+    const rows = items.slice(0, 20).filter(m => m && mongoose.Types.ObjectId.isValid(m.messageId));
+    if (!rows.length) return [];
+    const messages = await Message.find({ _id: { $in: rows.map(m => m.messageId) }, sender: reportedId })
+        .select('_id chatId sender timestamp')
+        .lean();
+    const chatIds = [...new Set(messages.map(m => String(m.chatId)))];
+    const chats = await Chat.find({ _id: { $in: chatIds }, participants: reporterId }).select('_id').lean();
+    const okChats = new Set(chats.map(c => String(c._id)));
+    const byId = new Map(messages.filter(m => okChats.has(String(m.chatId))).map(m => [String(m._id), m]));
+    return rows
+        .filter(m => byId.has(String(m.messageId)))
+        .map(m => {
+            const msg = byId.get(String(m.messageId));
+            return {
+                messageId: msg._id,
+                chatId: msg.chatId,
+                senderId: msg.sender,
+                text: String(m.text || '').slice(0, 2000),
+                mediaUrl: typeof m.mediaUrl === 'string' && m.mediaUrl.startsWith('https://') ? m.mediaUrl : undefined,
+                sentAt: msg.timestamp
+            };
+        });
+};
 
 export const reportContent = asyncHandler(async (req, res) => {
     const userId = req.user?._id;
@@ -77,6 +105,13 @@ export const reportContent = asyncHandler(async (req, res) => {
             throw new ApiError(400, "You cannot report yourself");
         }
         reportData.reportedUserId = contentId;
+
+        // Phase 3 #2: up to 20 messages the reporter attaches from a chat with
+        // this user. Only messages that really are in a chat the reporter is
+        // part of, sent by the reported user, are kept.
+        if (Array.isArray(req.body.attachedMessages) && req.body.attachedMessages.length) {
+            reportData.attachedMessages = await verifiedAttachments(userId, contentId, req.body.attachedMessages);
+        }
     }
 
     // Ensure the same user can't report the same target twice

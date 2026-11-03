@@ -10,6 +10,7 @@ import { getWatchHistory, removeFromHistory, clearHistory, updateHistorySettings
 import { getMyCategoryPreferences, updateMyCategoryPreferences, getNewPostRing } from "../controllers/discovery.controllers.js";
 import { getActivitySettings, updateActivitySettings } from "../controllers/user/activitySettings.js";
 import { getProfileVisitors } from "../controllers/profileVisitors.controllers.js";
+import { registerDevice, unregisterDevice, listDevices } from "../controllers/user/devices.js";
 import { searchAllContent } from "../controllers/searchAllContent.controllers.js";
 import { followUser, unfollowUser, getFollowers, getFollowing, approveFollowRequest, rejectFollowRequest, getPendingFollowRequests, getSentFollowRequests } from "../controllers/follower.controllers.js";
 import { getSearchSuggestions } from "../controllers/searchSuggestion.controllers.js";
@@ -47,6 +48,9 @@ router.route("/me/activity-settings").get(verifyJWT, getActivitySettings).patch(
 // Profile visitors (#65) and the new-post ring (#55)
 router.get("/me/profile-visitors", verifyJWT, getProfileVisitors);
 router.get("/me/new-post-ring", verifyJWT, getNewPostRing);
+
+// Push devices per account, several accounts per phone (Phase 3 #25)
+router.route("/me/devices").get(verifyJWT, listDevices).post(verifyJWT, registerDevice).delete(verifyJWT, unregisterDevice);
 
 router.route("/register").post(authRateLimit, registerUser);
 router.route("/register/verify").post(authRateLimit, verifyRegistrationOTP);

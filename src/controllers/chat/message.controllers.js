@@ -4,21 +4,28 @@ import { User } from '../../models/user.models.js';
 import { ApiError } from '../../utils/ApiError.js';
 import { ApiResponse } from '../../utils/ApiResponse.js';
 import { asyncHandler } from '../../utils/asyncHandler.js';
-import { uploadBufferToBunny } from '../../utils/bunny.js';
+import { uploadBufferToBunny, isBunnyUrl } from '../../utils/bunny.js';
 import { CHAT_MEDIA_LIMITS_MB, POST_MEDIA_LIMITS_MB, tooLargeMessage } from '../../constants/uploadLimits.js';
 import socketManager from '../../config/socket.js';
 import { sendPushNotification } from '../pushNotification.controllers.js';
-import { sendNotification } from '../../config/firebase-admin.config.js';
 import notificationCache from '../../utils/notificationCache.utils.js';
 import { redisClient } from '../../config/redis.config.js';
 import { calculateMessageStatus } from '../../utils/messageStatus.utils.js';
 import { safeEmitToChat, assertNotBlockedInChat, isChatMutedFor } from './helpers.js';
 import { buildSharedPostSnapshot, sharedPostSummary, recordPostShare } from '../../utils/sharedPost.utils.js';
+import { notExpiredFilter, redactViewOnce, expiryFor, viewOnceAllowed, parseBool, previewLabel, joinedAtOf, VIEW_ONCE_UNOPENED_TTL_MS } from '../../utils/chatRoles.rules.js';
+import { prepareEncryptedMessage, markChatEncrypted } from '../../utils/e2ee.utils.js';
+import { lookupGif } from '../../services/giphy.service.js';
+import { getPushTargets, sendFcmToTargets } from '../../services/pushTargets.service.js';
 
 // Ceiling on how many messages one request may pull, matching the one
 // getUserChats already applies. Without it ?limit=100000 made the server fetch,
 // populate and serialise a hundred thousand documents in a single response.
 const MAX_MESSAGE_PAGE_LIMIT = 100;
+
+const safeJsonArray = (s) => {
+    try { const v = JSON.parse(s); return Array.isArray(v) ? v : []; } catch { return []; }
+};
 
 // Turns user input into a literal for $regex — same helper as search.controllers.js.
 const escapeRegex = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -89,9 +96,16 @@ export const getChatMessages = asyncHandler(async (req, res) => {
         chatId,
         $and: [
             { deletedForEveryone: { $ne: true } },
-            { 'deletedFor.userId': { $ne: currentUserId } }
+            { 'deletedFor.userId': { $ne: currentUserId } },
+            // Disappearing messages (#37) vanish on time, before the purge job runs.
+            notExpiredFilter()
         ]
     };
+    // Someone added to a group sees messages from when they joined (#21).
+    const joinedAt = chat.chatType === 'group' ? joinedAtOf(chat, currentUserId) : null;
+    if (joinedAt) {
+        messageQuery.$and.push({ timestamp: { $gte: joinedAt } });
+    }
 
     const [messages, totalMessages] = await Promise.all([
         Message.find(messageQuery)
@@ -104,7 +118,7 @@ export const getChatMessages = asyncHandler(async (req, res) => {
             // missing from this select vanishes on the next refresh. That
             // failure mode reads as "the attachment disappeared", which is
             // worse than never having shown it.
-            .select('sender message messageType mediaUrl fileName fileSize duration timestamp readBy replyTo reactions deletedForEveryone productReference storyReference linkPreview checkoutDetails isEdited isForwarded forwardedFrom isPinned deliveryStatus fontStyle waveform')
+            .select('sender message messageType mediaUrl fileName fileSize duration timestamp readBy replyTo reactions deletedForEveryone productReference storyReference sharedPost linkPreview checkoutDetails isEdited isForwarded forwardedFrom isPinned deliveryStatus fontStyle waveform system gif expiresAt viewOnce viewOnceOpenedBy viewOnceExpired e2ee')
             .populate('sender', 'username fullName profileImageUrl')
             .populate({
                 path: 'replyTo',
@@ -119,6 +133,10 @@ export const getChatMessages = asyncHandler(async (req, res) => {
     ]);
 
     const processedMessages = messages.map(msg => {
+        // View-once (#48): the link is only handed out by the open endpoint.
+        if (msg.viewOnce) {
+            msg = redactViewOnce(msg, currentUserId);
+        }
         if (msg.deletedForEveryone) {
             return {
                 ...msg,
@@ -163,6 +181,8 @@ export const getChatMessages = asyncHandler(async (req, res) => {
     return res.status(200).json(
         new ApiResponse(200, {
             messages: messagesWithStatus.reverse(),
+            disappearingSeconds: Number(chat.disappearing?.seconds) || 0,
+            e2ee: !!chat.e2ee?.enabled,
             pagination: {
                 currentPage: pageNum,
                 totalPages: Math.ceil(totalMessages / pageLimit),
@@ -210,17 +230,37 @@ export const addMessage = asyncHandler(async (req, res) => {
         sharedPost = await buildSharedPostSnapshot(sharedPostId, currentUserId);
     }
 
-    if ((!message || message.trim().length === 0) && !mediaFile && !sharedPost) {
+    // GIF or sticker (#7): body { messageType: 'gif' | 'sticker', gifId }.
+    // The details come from GIPHY through our proxy, never from the client.
+    let gif = null;
+    if (messageType === 'gif' || messageType === 'sticker') {
+        const gifId = body.gifId || body.gif?.id;
+        if (!gifId) throw new ApiError(400, 'gifId is required');
+        gif = await lookupGif(String(gifId));
+        if (!gif) throw new ApiError(404, 'That GIF is no longer available');
+    }
+
+    // View-once photo or video (#48). Checked against the chat below.
+    const viewOnce = parseBool(body.viewOnce);
+
+    // End-to-end encrypted message (#2): the server stores the envelope as is.
+    const isEncrypted = messageType === 'encrypted';
+
+    if ((!message || message.trim().length === 0) && !mediaFile && !sharedPost && !gif && !isEncrypted) {
         throw new ApiError(400, 'Message content or media file is required');
     }
 
-    const finalMessage = message && message.trim().length > 0
+    const finalMessage = isEncrypted
+        ? '🔒 Encrypted message'
+        : message && message.trim().length > 0
         ? message.trim()
         : mediaFile
             ? `📎 ${mediaFile.originalname}`
             : sharedPost
                 ? sharedPostSummary(sharedPost)
-                : '';
+                : gif
+                    ? previewLabel(messageType)
+                    : '';
 
     const chat = await Chat.findOne({
         _id: chatId,
@@ -247,6 +287,20 @@ export const addMessage = asyncHandler(async (req, res) => {
         await assertNotBlockedInChat(currentUserId, chat.participants, 'send');
     }
 
+    const effectiveType = mediaFile && messageType === 'text'
+        ? (mediaFile.mimetype.startsWith('video/') ? 'video' : mediaFile.mimetype.startsWith('image/') ? 'image' : 'file')
+        : messageType;
+    if (viewOnce && !viewOnceAllowed(chat, effectiveType)) {
+        throw new ApiError(400, 'View once works for photos and videos in one-to-one chats');
+    }
+
+    // Encrypted messages: validate the envelope and check it covers every
+    // device that should read it. A 409 tells the sender to fetch keys again.
+    let e2eeEnvelope = null;
+    if (isEncrypted) {
+        e2eeEnvelope = await prepareEncryptedMessage(chat, currentUserId, body.e2ee);
+    }
+
     const recipients = chat.participants.filter(
         p => p.toString() !== currentUserId.toString()
     );
@@ -269,6 +323,43 @@ export const addMessage = asyncHandler(async (req, res) => {
 
     if (productReference) {
         messageData.productReference = productReference;
+    }
+
+    if (gif) {
+        messageData.gif = gif;
+    }
+
+    if (e2eeEnvelope) {
+        messageData.e2ee = e2eeEnvelope;
+        // Encrypted attachments live at these links (ciphertext). Only our
+        // own encrypted-blob folder is accepted.
+        const blobUrls = (Array.isArray(body.e2eeBlobUrls) ? body.e2eeBlobUrls
+            : typeof body.e2eeBlobUrls === 'string' ? safeJsonArray(body.e2eeBlobUrls) : [])
+            .filter(u => typeof u === 'string' && isBunnyUrl(u) && u.includes('/chat_e2ee/'))
+            .slice(0, 10);
+        if (blobUrls.length) messageData.e2eeBlobUrls = blobUrls;
+    }
+
+    if (viewOnce) {
+        // The app uploads first and sends the link as the message text. For a
+        // view-once message the link must only live in mediaUrl, which lists
+        // never show, and the text becomes a neutral label.
+        if (!mediaFile && !isEncrypted && /^https:\/\/\S+$/.test(finalMessage)) {
+            messageData.mediaUrl = finalMessage;
+        }
+        if (!isEncrypted && !messageData.mediaUrl && !mediaFile) {
+            throw new ApiError(400, 'A view-once message needs a photo or video');
+        }
+        messageData.message = previewLabel(effectiveType, { viewOnce: true });
+        messageData.viewOnce = true;
+        // Never opened: the media goes after 14 days anyway.
+        messageData.viewOnceMediaDeleteAt = new Date(Date.now() + VIEW_ONCE_UNOPENED_TTL_MS);
+    }
+
+    // Disappearing messages (#37): stamp the expiry from the chat's timer.
+    const expiresAt = expiryFor(chat, messageType);
+    if (expiresAt) {
+        messageData.expiresAt = expiresAt;
     }
 
     if (sharedPost) {
@@ -369,7 +460,7 @@ export const addMessage = asyncHandler(async (req, res) => {
     chat.lastMessageAt = new Date();
     chat.lastMessage = {
         sender: currentUserId,
-        message: finalMessage,
+        message: viewOnce ? previewLabel(messageData.messageType, { viewOnce: true }) : finalMessage,
         messageType: messageData.messageType,
         timestamp: new Date()
     };
@@ -388,9 +479,16 @@ export const addMessage = asyncHandler(async (req, res) => {
         })
         .lean();
 
+    // First encrypted message in this chat: mark it and say so (#2).
+    if (e2eeEnvelope && !chat.e2ee?.enabled) {
+        await markChatEncrypted(chat, currentUserId);
+    }
+
+    const outgoing = viewOnce ? redactViewOnce(populatedMessage, null) : populatedMessage;
+
     safeEmitToChat(chatId, 'new_message', {
         chatId,
-        message: populatedMessage
+        message: outgoing
     });
 
     if (sharedPost) {
@@ -417,6 +515,16 @@ export const addMessage = asyncHandler(async (req, res) => {
                 // blank on a notification-launched open.
                 const senderAvatar = sender?.profileImageUrl || '';
 
+                // Encrypted text can't be previewed by the server (#2), and a
+                // view-once photo shouldn't be described by its file name.
+                const lockedBody = isEncrypted
+                    ? (viewOnce ? '🔒 View-once media' : '🔒 New message')
+                    : viewOnce
+                        ? previewLabel(messageData.messageType, { viewOnce: true })
+                        : gif
+                            ? `Sent a ${messageType === 'sticker' ? 'sticker' : 'GIF'}`
+                            : null;
+
                 const notificationData = {
                     title: `New message from ${senderName}`,
                     // A story reply carries real text — an emoji or a typed
@@ -424,7 +532,7 @@ export const addMessage = asyncHandler(async (req, res) => {
                     // attachment. Without this case it fell into the final
                     // branch and pushed "Sent a file", which describes nothing
                     // that happened.
-                    body: messageType === 'shared_post'
+                    body: lockedBody ? lockedBody : messageType === 'shared_post'
                         ? (message && message.trim() ? `${sharedPostSummary(sharedPost)}: ${finalMessage.length > 40 ? finalMessage.substring(0, 40) + '…' : finalMessage}` : sharedPostSummary(sharedPost))
                         : (messageType === 'text' || messageType === 'story_reply')
                         ? (messageType === 'story_reply'
@@ -443,31 +551,23 @@ export const addMessage = asyncHandler(async (req, res) => {
                 // FCM push for MOBILE devices. The mobile app stores its device
                 // token on User.fcmToken (not in PushSubscription), so the
                 // web-push path above never reaches it — send FCM explicitly.
-                const recipients = await User.find({
-                    _id: { $in: otherParticipants },
-                    fcmToken: { $exists: true, $ne: null }
-                }).select('fcmToken');
-
-                for (const recipient of recipients) {
-                    try {
-                        await sendNotification(
-                            recipient.fcmToken,
-                            { title: notificationData.title, body: notificationData.body },
-                            {
-                                type: 'message',
-                                chatId: notificationData.chatId,
-                                messageId: notificationData.messageId,
-                                senderId: notificationData.senderId,
-                                // FCM data values must be strings.
-                                senderName: String(senderName),
-                                senderAvatar: String(senderAvatar),
-                                url: notificationData.url
-                            }
-                        );
-                    } catch (fcmErr) {
-                        console.error('FCM send failed for a recipient:', fcmErr?.message || fcmErr);
+                // Every device of every recipient, including phones that hold
+                // several accounts (#25); each push names the account it's for.
+                const targets = await getPushTargets(otherParticipants);
+                await sendFcmToTargets(targets, {
+                    title: notificationData.title,
+                    body: notificationData.body,
+                    type: 'message',
+                    data: {
+                        chatId: notificationData.chatId,
+                        messageId: notificationData.messageId,
+                        senderId: notificationData.senderId,
+                        senderName: String(senderName),
+                        senderAvatar: String(senderAvatar),
+                        url: notificationData.url,
+                        e2ee: isEncrypted ? '1' : undefined
                     }
-                }
+                });
             }
         } catch (pushError) {
             console.error('Error sending push notification:', pushError);
@@ -497,7 +597,7 @@ export const addMessage = asyncHandler(async (req, res) => {
     })();
 
     return res.status(201).json(
-        new ApiResponse(201, populatedMessage, 'Message sent successfully')
+        new ApiResponse(201, viewOnce ? redactViewOnce(populatedMessage, currentUserId) : populatedMessage, 'Message sent successfully')
     );
 });
 
@@ -673,7 +773,12 @@ export const searchMessages = asyncHandler(async (req, res) => {
     const searchFilter = {
         chatId,
         message: { $regex: searchPattern, $options: 'i' },
-        isDeleted: { $ne: true }
+        isDeleted: { $ne: true },
+        // Encrypted messages can't be searched on the server (#2), and
+        // disappeared or view-once ones must not resurface here.
+        messageType: { $nin: ['encrypted', 'system'] },
+        viewOnce: { $ne: true },
+        $and: [notExpiredFilter()]
     };
 
     const [searchResults, totalResults] = await Promise.all([

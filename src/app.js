@@ -258,6 +258,8 @@ import legalRouter from "./routes/legal.routes.js";
 import binRouter from "./routes/bin.routes.js";
 import draftRouter from "./routes/draft.routes.js";
 import { metaRouter, emailRouter } from "./routes/meta.routes.js";
+import e2eeRouter from "./routes/e2ee.routes.js";
+import gifRouter from "./routes/gif.routes.js";
 
 
 
@@ -287,6 +289,8 @@ app.use("/api/v1/boosts", boostRouter);
 app.use("/api/v1/orders", orderRouter);
 // Phase 2
 app.use("/api/v1/bin", binRouter);
+app.use("/api/v1/e2ee", e2eeRouter);
+app.use("/api/v1/gifs", gifRouter);
 app.use("/api/v1/drafts", draftRouter);
 app.use("/api/v1/meta", metaRouter);
 app.use("/api/v1/email", emailRouter);
