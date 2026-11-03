@@ -45,6 +45,23 @@ const MediaSchema = new mongoose.Schema({
     // check it before requesting a smaller rendition on a slow connection,
     // or they will ask for a file that was never encoded.
     availableResolutions: String,
+    // Phase 2 #3: the display format this item was framed for ('4:5', '1:1',
+    // '1.91:1', or '9:16' for vibes) and, for videos, the area to show. Photos
+    // are cropped on the device before upload, so they never carry `crop`.
+    // Videos are uploaded whole and cropped at playback time (object-fit:
+    // cover plus this window), which keeps FFmpeg off the API servers and lets
+    // the frame be adjusted later without re-encoding. All values are 0..1
+    // fractions of the source frame. Absent on media posted before #3.
+    aspect: String,
+    crop: {
+        type: new mongoose.Schema({
+            x: Number,
+            y: Number,
+            width: Number,
+            height: Number
+        }, { _id: false }),
+        default: undefined
+    },
     additionalMedia: [AdditionalMediaSchema]
 }, { _id: false });
 
@@ -63,6 +80,9 @@ const ProductDetailsSchema = new mongoose.Schema({
     name: String,
     description: String,
     price: Number,
+    // Phase 2 #42: the "was" price (MRP). A product with originalPrice above
+    // price is a deal; the discount is computed, never stored.
+    originalPrice: Number,
     currency: String,
     category: String,
     subcategory: String,
@@ -318,6 +338,17 @@ const AnalyticsSchema = new mongoose.Schema({
     }]
 }, { _id: false });
 
+// 🤝 Collab posts (Phase 2 #50/#57). The owner invites; the invitee accepts or
+// declines. Only 'accepted' entries are shown on the post and put it on the
+// collaborator's profile. Either side can end it: the owner by removing the
+// entry, the collaborator by removing themselves.
+const CollaboratorSchema = new mongoose.Schema({
+    userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+    status: { type: String, enum: ['pending', 'accepted', 'declined'], default: 'pending' },
+    invitedAt: { type: Date, default: Date.now },
+    respondedAt: { type: Date, default: null }
+}, { _id: false });
+
 // 📬 Post Schema
 const PostSchema = new mongoose.Schema({
     userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
@@ -339,8 +370,18 @@ const PostSchema = new mongoose.Schema({
      */
     category: String,
     customCategory: String,
+    // Phase 2 #17: up to 10 free-text subcategories, searchable and filterable.
+    // The single customization.<type>.subcategory is kept in step with the
+    // first entry for older clients.
+    subcategories: { type: [String], default: undefined },
     hashtags: [String],
     mentions: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
+    // Phase 2 #53: one top-level comment the post owner pinned.
+    pinnedCommentId: { type: mongoose.Schema.Types.ObjectId, ref: 'Comment', default: null },
+    // Phase 2 #50/#57
+    collaborators: { type: [CollaboratorSchema], default: undefined },
+    // Phase 2 #46: view thresholds the owner has already been told about.
+    viewMilestones: { type: [Number], default: undefined, select: false },
     media: [MediaSchema],
     customization: {
         product: ProductDetailsSchema,
@@ -453,5 +494,11 @@ PostSchema.index({ contentType: 1, createdAt: -1 });
 // getTrendingPosts (post/read.controllers.js:563) sorts the whole collection by
 // engagement before taking 100.
 PostSchema.index({ 'engagement.likes': -1, 'engagement.comments': -1, createdAt: -1 });
+
+// Phase 2: collab profile grids ({ 'collaborators.userId', status }), the
+// subcategory filter (#17) and hashtag pages / trending topics (#58).
+PostSchema.index({ 'collaborators.userId': 1, createdAt: -1 }, { sparse: true });
+PostSchema.index({ subcategories: 1, createdAt: -1 }, { sparse: true });
+PostSchema.index({ hashtags: 1, createdAt: -1 });
 
 export default mongoose.model('Post', PostSchema);

@@ -22,6 +22,25 @@ const UserSchema = new mongoose.Schema({
     isAddressHidden: { type: Boolean, default: false },
     privacy: { type: String, enum: ['private', 'public'], default: 'public' },
     isFullPrivate: { type: Boolean, default: false },
+    // Phase 2 #64: who may @mention this account. 'following' = only accounts
+    // this user follows.
+    mentionPrivacy: { type: String, enum: ['everyone', 'following', 'nobody'], default: 'everyone' },
+    // Phase 2 #14: while true, opening a post or vibe is not written to the
+    // watch history (the post's own view count still counts it).
+    historyPaused: { type: Boolean, default: false },
+    // Phase 2 #65: hide my visits from the people I look at. Reciprocal: an
+    // account that hides its visits can't see its own visitors either.
+    profileVisitsHidden: { type: Boolean, default: false },
+    // Phase 2 #26: content categories this user wants more of (max 10).
+    preferredCategories: { type: [String], default: undefined },
+    // Phase 2 #10: email per category. 'digest' = one daily summary; 'off' = none.
+    // Transactional mail (OTP, orders, plan and verification notices) is not
+    // controlled by this.
+    emailNotifications: {
+        activity: { type: String, enum: ['digest', 'off'], default: 'digest' },
+        messages: { type: String, enum: ['digest', 'off'], default: 'digest' }
+    },
+    emailDigestSentAt: { type: Date, default: null, select: false },
     // Messaging privacy settings
     messagingPrivacy: {
         onlineStatus: {

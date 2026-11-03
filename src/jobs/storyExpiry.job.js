@@ -1,6 +1,7 @@
 import cron from 'node-cron';
 import Story from '../models/story.models.js';
 import { deleteFromBunny } from '../utils/bunny.js';
+import StoryComment from '../models/storyComment.models.js';
 
 /**
  * Story Expiry Cron Job
@@ -106,7 +107,7 @@ export const purgeExpiredStories = async ({
                 const claimed = await Story.findOneAndUpdate(
                     { _id: candidate._id, $or: claimable },
                     { $set: { purgeClaimedAt: new Date() } },
-                    { new: true, projection: { mediaUrl: 1 } }
+                    { new: true, projection: { mediaUrl: 1, 'sharedPost.postId': 1 } }
                 ).lean();
 
                 if (!claimed) {
@@ -117,7 +118,10 @@ export const purgeExpiredStories = async ({
                 // Media first. deleteFromBunny handles both storage-zone files
                 // and Stream videos, and treats a 404 as success, so a retry
                 // of a partially-done row is harmless.
-                if (claimed.mediaUrl) {
+                // A repost (Phase 2 #56) shows the ORIGINAL post's media and
+                // owns no file of its own: deleting mediaUrl would delete the
+                // original post's photo or video.
+                if (claimed.mediaUrl && !claimed.sharedPost?.postId) {
                     try {
                         await deleteFromBunny(claimed.mediaUrl);
                     } catch (error) {
@@ -135,6 +139,8 @@ export const purgeExpiredStories = async ({
                 }
 
                 await Story.deleteOne({ _id: candidate._id });
+                // Story comments (#32) go with the story.
+                await StoryComment.deleteMany({ storyId: candidate._id }).catch(() => {});
                 deleted++;
             }
 

@@ -10,6 +10,21 @@ export function validateSettingValue(key, value) {
         return { valid: false, message: `No type rule defined for key '${key}'` };
     }
 
+    // Lists (Phase 2): a non-empty array of strings or of non-negative numbers.
+    if (expectedType === 'string[]' || expectedType === 'number[]') {
+        const itemType = expectedType.slice(0, -2);
+        if (!Array.isArray(value) || value.length === 0 || value.length > 100) {
+            return { valid: false, message: `'${key}' expects a list of 1 to 100 ${itemType}s` };
+        }
+        const bad = value.find((v) => typeof v !== itemType
+            || (itemType === 'string' && (!v.trim() || v.length > 40))
+            || (itemType === 'number' && (!Number.isFinite(v) || v < 0)));
+        if (bad !== undefined) {
+            return { valid: false, message: `'${key}' has an invalid entry: ${JSON.stringify(bad)}` };
+        }
+        return { valid: true };
+    }
+
     const actualType = typeof value;
 
     if (actualType !== expectedType) {

@@ -4,6 +4,7 @@ import { ApiResponse } from '../../utils/ApiResponse.js';
 import Setting from '../../models/settings.models.js';
 import { ALLOWED_SETTING_KEYS } from '../../constants/settings.js';
 import { validateSettingValue } from './settings.helpers.js';
+import { clearSettingCache } from '../../utils/appSettings.utils.js';
 
 // POST /admin/settings  — add a new key (fails if key already exists)
 export const addSetting = asyncHandler(async (req, res) => {
@@ -26,6 +27,7 @@ export const addSetting = asyncHandler(async (req, res) => {
     }
 
     const setting = await Setting.create({ key, value, updatedBy: req.admin._id });
+    clearSettingCache(key);
 
     return res
         .status(201)
@@ -83,6 +85,7 @@ export const updateSetting = asyncHandler(async (req, res) => {
     if (!setting) {
         throw new ApiError(404, `Setting '${key}' not found. Use add to create it.`);
     }
+    clearSettingCache(key);
 
     return res
         .status(200)

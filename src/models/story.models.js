@@ -24,6 +24,35 @@ const StorySchema = new mongoose.Schema({
         type: mongoose.Schema.Types.ObjectId,
         ref: 'User'
     }],
+    // Phase 2 #32: who liked the story. Like `viewers`, it never leaves the
+    // server; responses carry likesCount / isLiked instead.
+    likedBy: {
+        type: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
+        default: undefined
+    },
+    commentsCount: { type: Number, default: 0 },
+    // Phase 2 #56: a story that reposts a post or vibe. mediaUrl then points
+    // at the ORIGINAL post's media, which this story does not own: the purge
+    // job and deleteStory must never delete it from the CDN.
+    sharedPost: {
+        type: new mongoose.Schema({
+            postId: { type: mongoose.Schema.Types.ObjectId, ref: 'Post' },
+            authorId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+            authorUsername: String,
+            authorFullName: String,
+            authorProfileImageUrl: String,
+            postType: String,
+            contentType: String,
+            isVibe: Boolean,
+            caption: String,
+            mediaType: String,
+            thumbnailUrl: String,
+            title: String,
+            price: Number,
+            currency: String
+        }, { _id: false }),
+        default: undefined
+    },
     // Set only by the author, through PATCH /stories/:storyId/archive (and
     // cleared by .../unarchive). An archived story is exempt from the 24-hour
     // purge job, is hidden from the live tray and the profile stories tab, and

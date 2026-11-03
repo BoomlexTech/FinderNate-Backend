@@ -10,6 +10,8 @@ import { addBadgesToNestedUsers } from "../utils/userBadge.utils.js";
 import { redisClient, RedisKeys, RedisTTL } from "../config/redis.config.js";
 import socketManager from "../config/socket.js";
 import { assertCanViewPostById, assertPostInteractionAllowed } from "./post/visibility.js";
+import { resolveMentions, notifyMentions } from "../utils/mentions.utils.js";
+import { invalidatePostCaches } from "./post/helpers.js";
 
 const ENGAGEMENT_TTL = RedisTTL.POST_ENGAGEMENT;
 
@@ -118,13 +120,17 @@ export const createComment = asyncHandler(async (req, res) => {
         rootCommentId = parentComment.rootCommentId || parentCommentId;
     }
 
+    // @mentions (#64): only accounts that allow it become real mentions.
+    const mentionIds = await resolveMentions({ texts: [content], authorId: userId });
+
     const comment = await Comment.create({
         postId,
         userId,
         content,
         parentCommentId: parentCommentId || null,
         rootCommentId,
-        replyToUserId: finalReplyToUserId
+        replyToUserId: finalReplyToUserId,
+        ...(mentionIds.length ? { mentions: mentionIds } : {})
     });
 
     // Replies run through this same handler, so they are counted too.
@@ -156,6 +162,10 @@ export const createComment = asyncHandler(async (req, res) => {
                 });
             }
         }
+        // The post owner and the person replied to already hear about this
+        // comment, so a mention of them is not announced twice.
+        const alreadyNotified = [targetPost?.userId, finalReplyToUserId].filter(Boolean);
+        await notifyMentions({ mentionIds, skip: alreadyNotified, authorId: userId, postId, commentId: comment._id });
     } catch (error) {
         // Log error but don't fail the comment creation
         console.error("Error sending comment notification:", error);
@@ -165,6 +175,7 @@ export const createComment = asyncHandler(async (req, res) => {
     const populatedComment = await Comment.findById(comment._id)
         .populate('userId', 'username fullName profileImageUrl isBusinessProfile')
         .populate('replyToUserId', 'username fullName profileImageUrl isBusinessProfile')
+        .populate('mentions', 'username')
         .lean();
 
     // Add badges to user and replyToUser
@@ -188,26 +199,44 @@ export const getCommentsByPost = asyncHandler(async (req, res) => {
     // at all — not even to check it existed — so a signed-out caller holding a
     // postId got every comment on a private account's post, and a blocked user
     // got the thread the post itself answers 404 for.
-    await assertCanViewPostById(postId, req.user?._id || null);
+    const post = await assertCanViewPostById(postId, req.user?._id || null);
+
+    // The creator's pinned comment (#53) leads page 1 and is left out of the
+    // pages themselves, so it is never shown twice.
+    const pinnedId = post?.pinnedCommentId || null;
+    const listFilter = { postId, parentCommentId: null, isDeleted: false, ...(pinnedId ? { _id: { $ne: pinnedId } } : {}) };
 
     // ✅ OPTIMIZED: Only fetch top-level comments (parentCommentId: null)
-    const [comments, total] = await Promise.all([
-        Comment.find({ postId, parentCommentId: null, isDeleted: false })
+    const [comments, total, pinnedRows] = await Promise.all([
+        Comment.find(listFilter)
             .populate({
                 path: 'userId',
                 select: 'username fullName profileImageUrl isBusinessProfile',
                 match: { accountStatus: 'active', isDeleted: { $ne: true } }
             })
             .populate('replyToUserId', 'username fullName profileImageUrl isBusinessProfile')
+            .populate('mentions', 'username')
             .sort({ createdAt: 1 })
             .skip(skip)
             .limit(pageLimit)
             .lean(),
-        Comment.countDocuments({ postId, parentCommentId: null, isDeleted: false })
+        Comment.countDocuments(listFilter),
+        pinnedId && pageNum === 1
+            ? Comment.find({ _id: pinnedId, postId, parentCommentId: null, isDeleted: false })
+                .populate({
+                    path: 'userId',
+                    select: 'username fullName profileImageUrl isBusinessProfile',
+                    match: { accountStatus: 'active', isDeleted: { $ne: true } }
+                })
+                .populate('replyToUserId', 'username fullName profileImageUrl isBusinessProfile')
+                .populate('mentions', 'username')
+                .lean()
+            : Promise.resolve([])
     ]);
 
     // Filter out comments from banned/deleted users (populate returns null userId when match fails)
-    const visibleComments = comments.filter(c => c.userId != null);
+    const pinnedVisible = pinnedRows.filter(c => c.userId != null).map(c => ({ ...c, isPinned: true }));
+    const visibleComments = [...pinnedVisible, ...comments.filter(c => c.userId != null)];
 
     // Populate likes from Like collection for each comment
     const commentIds = visibleComments.map(c => c._id);
@@ -274,9 +303,10 @@ export const getCommentsByPost = asyncHandler(async (req, res) => {
 
     return res.status(200).json(
         new ApiResponse(200, {
-            totalComments: total,
+            totalComments: total + (pinnedId ? 1 : 0),
             page: pageNum,
             totalPages: Math.ceil(total / pageLimit),
+            pinnedCommentId: pinnedId,
             comments: commentsWithBadges
         }, "Comments fetched successfully")
     );
@@ -524,17 +554,27 @@ export const updateComment = asyncHandler(async (req, res) => {
     const { content } = req.body;
     if (!content) throw new ApiError(400, "content is required");
 
-    await assertCommentAuthor(commentId, userId);
+    const existingComment = await assertCommentAuthor(commentId, userId);
+    const previous = await Comment.findById(commentId).select('mentions').lean();
+    const mentionIds = await resolveMentions({ texts: [content], authorId: userId });
 
     const comment = await Comment.findByIdAndUpdate(
         commentId,
-        { content, isEdited: true },
+        { content, isEdited: true, mentions: mentionIds },
         { new: true }
     )
         .populate('userId', 'username fullName profileImageUrl isBusinessProfile')
         .populate('replyToUserId', 'username fullName profileImageUrl isBusinessProfile')
         .lean();
     if (!comment || comment.isDeleted) throw new ApiError(404, "Comment not found");
+
+    notifyMentions({
+        mentionIds,
+        previousIds: (previous?.mentions || []).map(String),
+        authorId: userId,
+        postId: existingComment.postId,
+        commentId,
+    }).catch(() => {});
 
     // Add badges to user and replyToUser
     const [commentWithBadges] = await addBadgesToNestedUsers([comment]);
@@ -557,6 +597,9 @@ export const deleteComment = asyncHandler(async (req, res) => {
         { new: true }
     );
 
+    // A deleted comment can't stay pinned.
+    await Post.updateOne({ _id: existing.postId, pinnedCommentId: existing._id }, { $set: { pinnedCommentId: null } });
+
     if (!existing.isDeleted) {
         const commentsCount = await adjustCommentsCount(existing.postId, -1);
         if (commentsCount !== null) socketManager.emitGlobal('post_engagement_updated', { postId: existing.postId.toString(), commentsCount });
@@ -564,3 +607,43 @@ export const deleteComment = asyncHandler(async (req, res) => {
 
     return res.status(200).json(new ApiResponse(200, null, "Comment deleted successfully"));
 }); 
+
+/**
+ * Pin one top-level comment to the top of a post (#53). Post owner only; a
+ * new pin replaces the old one. PATCH /posts/:postId/pinned-comment { commentId }
+ */
+export const pinComment = asyncHandler(async (req, res) => {
+    const userId = req.user._id;
+    const { postId } = req.params;
+    const { commentId } = req.body || {};
+    assertValidCommentId(commentId);
+
+    const post = await assertCanViewPostById(postId, userId);
+    if (String(post.userId) !== String(userId)) {
+        throw new ApiError(403, "Only the creator can pin a comment");
+    }
+
+    const comment = await Comment.findOne({ _id: commentId, postId, isDeleted: false }).select('parentCommentId').lean();
+    if (!comment) throw new ApiError(404, "Comment not found");
+    if (comment.parentCommentId) throw new ApiError(400, "Only a top-level comment can be pinned, not a reply");
+
+    await Post.updateOne({ _id: postId }, { $set: { pinnedCommentId: commentId } });
+    invalidatePostCaches(postId, userId).catch(() => {});
+    socketManager.emitGlobal('post_engagement_updated', { postId: String(postId), pinnedCommentId: String(commentId) });
+
+    return res.status(200).json(new ApiResponse(200, { postId, pinnedCommentId: commentId }, "Comment pinned"));
+});
+
+/** DELETE /posts/:postId/pinned-comment */
+export const unpinComment = asyncHandler(async (req, res) => {
+    const userId = req.user._id;
+    const { postId } = req.params;
+    const post = await assertCanViewPostById(postId, userId);
+    if (String(post.userId) !== String(userId)) {
+        throw new ApiError(403, "Only the creator can unpin a comment");
+    }
+    await Post.updateOne({ _id: postId }, { $set: { pinnedCommentId: null } });
+    invalidatePostCaches(postId, userId).catch(() => {});
+    socketManager.emitGlobal('post_engagement_updated', { postId: String(postId), pinnedCommentId: null });
+    return res.status(200).json(new ApiResponse(200, { postId, pinnedCommentId: null }, "Comment unpinned"));
+});

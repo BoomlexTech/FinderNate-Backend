@@ -7,6 +7,8 @@ import { FeedCacheManager } from "../../utils/cache.utils.js";
 import { redisClient } from "../../config/redis.config.js";
 import mongoose from "mongoose";
 import { interactionSettingsOf } from "./visibility.js";
+import { resolveMentions, notifyMentions } from "../../utils/mentions.utils.js";
+import { normalizeSubcategories } from "../../utils/postExtras.utils.js";
 
 export const editPost = asyncHandler(async (req, res) => {
     const { postId } = req.params;
@@ -59,7 +61,23 @@ export const editPost = asyncHandler(async (req, res) => {
 
     if (caption !== undefined) updateData.caption = caption;
     if (description !== undefined) updateData.description = description;
-    if (parsedMentions) updateData.mentions = parsedMentions;
+
+    // Mentions follow the text (#64): recomputed whenever the caption or
+    // description changes, with the same privacy rules as on create. Only the
+    // accounts that weren't mentioned before are notified.
+    const previousMentionIds = (post.mentions || []).map(String);
+    let newMentionIds = null;
+    if (caption !== undefined || description !== undefined || parsedMentions) {
+        newMentionIds = await resolveMentions({
+            texts: [caption !== undefined ? caption : post.caption, description !== undefined ? description : post.description],
+            explicitIds: parsedMentions || [],
+            authorId: userId,
+        });
+        updateData.mentions = newMentionIds;
+    }
+
+    const subcategories = normalizeSubcategories(req.body.subcategories);
+    if (subcategories !== undefined) updateData.subcategories = subcategories;
 
     const customization = post.customization?.toObject?.() || { ...post.customization } || {};
 
@@ -166,6 +184,10 @@ export const editPost = asyncHandler(async (req, res) => {
     if (isPrivacyChangingToPublic) {
         await FeedCacheManager.invalidateExploreFeed();
         await FeedCacheManager.invalidateTrendingFeed();
+    }
+
+    if (newMentionIds) {
+        notifyMentions({ mentionIds: newMentionIds, previousIds: previousMentionIds, authorId: userId, postId }).catch(() => {});
     }
 
     return res.status(200).json(new ApiResponse(200, updatedPost, "Post updated successfully"));

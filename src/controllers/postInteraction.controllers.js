@@ -3,6 +3,29 @@ import { asyncHandler } from "../utils/asyncHandler.js";
 import PostInteraction from "../models/postInteraction.models.js";
 import { ApiError } from "../utils/ApiError.js";
 import { ApiResponse } from "../utils/ApiResponse.js";
+import { User } from "../models/user.models.js";
+import { recordUniqueViews } from "../utils/viewMilestones.utils.js";
+
+/**
+ * Whether this account has paused its watch history (Phase 2 #14). While it
+ * is paused, opening a post writes nothing about the viewer: no history row,
+ * so no unique view and no "seen" flag either. Memoised briefly because view
+ * events are the busiest write in the app.
+ */
+const historyPauseMemo = new Map();
+export const isHistoryPaused = async (userId) => {
+    const key = String(userId);
+    const hit = historyPauseMemo.get(key);
+    if (hit && Date.now() - hit.at < 60 * 1000) return hit.paused;
+    let paused = false;
+    try {
+        paused = !!(await User.exists({ _id: userId, historyPaused: true }));
+    } catch { /* treat as not paused */ }
+    historyPauseMemo.set(key, { paused, at: Date.now() });
+    if (historyPauseMemo.size > 50000) historyPauseMemo.clear();
+    return paused;
+};
+export const forgetHistoryPause = (userId) => historyPauseMemo.delete(String(userId));
 
 const VALID_INTERACTION_TYPES = ['view', 'like', 'comment', 'share', 'click', 'hide'];
 
@@ -31,6 +54,10 @@ export const trackPostInteraction = asyncHandler(async (req, res) => {
         throw new ApiError(400, "Invalid post ID format");
     }
 
+    if (interactionType === 'view' && await isHistoryPaused(userId)) {
+        return res.status(200).json(new ApiResponse(200, { recorded: false }, "History is paused"));
+    }
+
     try {
         // One atomic upsert instead of findOne-then-save.
         //
@@ -56,11 +83,16 @@ export const trackPostInteraction = asyncHandler(async (req, res) => {
             update.$max = { viewDuration };
         }
 
-        await PostInteraction.updateOne(
+        const result = await PostInteraction.updateOne(
             { userId, postId, interactionType },
             update,
             { upsert: true }
         );
+
+        // A first view by this viewer is a unique view (#46).
+        if (interactionType === 'view' && result.upsertedCount) {
+            recordUniqueViews([postId], userId).catch(() => {});
+        }
 
         return res.status(200).json(
             new ApiResponse(200, {}, "Interaction tracked successfully")
@@ -113,6 +145,8 @@ export const batchTrackInteractions = asyncHandler(async (req, res) => {
         throw new ApiError(400, `A batch may contain at most ${MAX_BATCH_INTERACTIONS} interactions, but ${interactions.length} were sent.`);
     }
 
+    const historyPaused = await isHistoryPaused(userId);
+
     try {
         const bulkOps = [];
 
@@ -139,6 +173,8 @@ export const batchTrackInteractions = asyncHandler(async (req, res) => {
             if (interactionType !== 'view' && viewDuration !== undefined) {
                 throw new ApiError(400, `viewDuration is not allowed for ${interactionType} interactions`);
             }
+
+            if (interactionType === 'view' && historyPaused) continue;
 
             // Use different approach to avoid $max and $setOnInsert conflict
             if (interactionType === 'view' && viewDuration > 0) {
@@ -185,7 +221,14 @@ export const batchTrackInteractions = asyncHandler(async (req, res) => {
         }
 
         if (bulkOps.length > 0) {
-            await PostInteraction.bulkWrite(bulkOps);
+            const result = await PostInteraction.bulkWrite(bulkOps);
+            // Views whose row was just created are first views (#46).
+            const upserted = result?.upsertedIds || {};
+            const firstViews = Object.keys(upserted)
+                .map((index) => bulkOps[Number(index)]?.updateOne)
+                .filter((op) => op?.filter?.interactionType === 'view')
+                .map((op) => op.filter.postId);
+            if (firstViews.length) recordUniqueViews(firstViews, userId).catch(() => {});
         }
 
         return res.status(200).json(

@@ -38,7 +38,7 @@ export const assertCanViewPostById = async (postId, viewerId, options = {}) => {
     // The interaction switches ride along so callers that go on to like,
     // comment or share can check them without a second read (#18).
     const post = await Post.findById(postId)
-        .select("userId settings.privacy settings.allowLikes settings.allowComments settings.allowShares")
+        .select("userId postType contentType category hashtags pinnedCommentId settings.privacy settings.allowLikes settings.allowComments settings.allowShares")
         .lean();
     if (!post) throw new ApiError(404, notFoundMessage);
 

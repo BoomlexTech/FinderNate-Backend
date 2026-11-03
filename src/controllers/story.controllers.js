@@ -506,19 +506,11 @@ export const deleteStory = asyncHandler(async (req, res) => {
         throw new ApiError(403, "You are not authorized to delete this story");
     }
 
-    // Delete media from Bunny CDN
-    try {
-        const { deleteFromBunny } = await import("../utils/bunny.js");
-        await deleteFromBunny(story.mediaUrl);
-    } catch (error) {
-        console.error('⚠️ Failed to delete story media from Bunny CDN:', error.message);
-        // Continue with story deletion even if media deletion fails
-    }
+    // Into the Bin for 15 days (Phase 2 #15); the purge job deletes the media.
+    const { moveToBin } = await import("../utils/bin.utils.js");
+    const binItem = await moveToBin('story', story, userId);
 
-    // Delete the story from database
-    await Story.findByIdAndDelete(storyId);
-
-    res.status(200).json(new ApiResponse(200, { storyId }, "Story deleted successfully"));
+    res.status(200).json(new ApiResponse(200, { storyId, inBin: true, binId: binItem._id, purgeAfter: binItem.purgeAfter }, "Story moved to your Bin"));
 });
 
 // Shared response shaping for the archive toggles: same field mapping the other
