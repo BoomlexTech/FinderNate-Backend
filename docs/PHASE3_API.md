@@ -137,7 +137,7 @@ Encryption covers one-to-one chats first; group chats come later. The server sto
 - **Forwarding:** the server answers `E2EE_FORWARD_ON_DEVICE`. The app decrypts the message and sends it again as a new message.
 - **Not encrypted:** payment links, checkout and order updates stay as server messages and are labelled that way in encrypted chats.
 - **Search:** server-side search skips encrypted messages.
-- **Reports:** `POST /reports` with `type: 'user'` accepts `attachedMessages: [{ messageId, text, mediaUrl? }]`, up to 20, which the reporter's device decrypts. Only messages the reported user sent, in a chat the reporter belongs to, are kept.
+- **Reports:** `POST /posts/report` with `type: 'user'` accepts `attachedMessages: [{ messageId, text, mediaUrl? }]`, up to 20, which the reporter's device decrypts. Only messages the reported user sent, in a chat the reporter belongs to, are kept.
 - **Calls:** unchanged, with no lock icon, until Stream confirms end-to-end encryption in both SDKs.
 
 ### Limits
