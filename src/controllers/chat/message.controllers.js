@@ -183,6 +183,8 @@ export const getChatMessages = asyncHandler(async (req, res) => {
             messages: messagesWithStatus.reverse(),
             disappearingSeconds: Number(chat.disappearing?.seconds) || 0,
             e2ee: !!chat.e2ee?.enabled,
+            chatType: chat.chatType,
+            participantIds: chat.participants.map(p => p.toString()),
             pagination: {
                 currentPage: pageNum,
                 totalPages: Math.ceil(totalMessages / pageLimit),
@@ -251,7 +253,8 @@ export const addMessage = asyncHandler(async (req, res) => {
     }
 
     const finalMessage = isEncrypted
-        ? '🔒 Encrypted message'
+        // What older app versions show; newer ones decrypt and replace it.
+        ? '🔒 Encrypted message. Update Findernate to read it.'
         : message && message.trim().length > 0
         ? message.trim()
         : mediaFile
