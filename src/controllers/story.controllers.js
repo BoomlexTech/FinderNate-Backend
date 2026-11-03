@@ -1,3 +1,4 @@
+import { shapeStoryEngagement } from '../utils/storyEngagement.utils.js';
 import Story from "../models/story.models.js";
 import { ApiResponse } from "../utils/ApiResponse.js";
 import { ApiError } from "../utils/ApiError.js";
@@ -184,6 +185,7 @@ export const fetchStoriesFeed = asyncHandler(async (req, res) => {
         obj.postType = obj.mediaType;
         delete obj.mediaType;
         delete obj.viewers;
+        shapeStoryEngagement(obj, userId, String(story.userId?._id ?? story.userId) === String(userId));
         // Remove privacy/moderation fields from user object in response
         if (obj.userId) {
             delete obj.userId.privacy;
@@ -288,6 +290,7 @@ export const fetchStoriesByUser = asyncHandler(async (req, res) => {
             ).size;
         }
         delete obj.viewers;
+        shapeStoryEngagement(obj, viewerId, isOwnStory);
         return obj;
     });
 
@@ -360,7 +363,7 @@ export const fetchStoryViewers = asyncHandler(async (req, res) => {
     const { storyId } = req.params;
     const { page = 1, limit = 20 } = req.query;
 
-    const story = await Story.findById(storyId).select("userId viewers").lean();
+    const story = await Story.findById(storyId).select("userId viewers likedBy commentsCount").lean();
     if (!story) throw new ApiError(404, "Story not found");
 
     // Owner only. This previously answered for ANY authenticated caller, so
@@ -404,12 +407,17 @@ export const fetchStoryViewers = asyncHandler(async (req, res) => {
         .lean();
     const viewerById = new Map(viewerDocs.map(u => [u._id.toString(), u]));
     // Keep the order of the viewers array — $in comes back in index order.
+    // Who also liked it (#32), so the list can show a heart next to them.
+    const likedSet = new Set((story.likedBy || []).map(String));
     const paginatedViewers = pageIds
         .map(id => viewerById.get(id.toString()))
-        .filter(Boolean);
+        .filter(Boolean)
+        .map(v => ({ ...v, liked: likedSet.has(String(v._id)) }));
 
     res.status(200).json(new ApiResponse(200, {
         viewers: paginatedViewers,
+        likesCount: likedSet.size,
+        commentsCount: story.commentsCount || 0,
         pagination: {
             page: pageNum,
             limit: pageSize,
@@ -464,16 +472,25 @@ export const fetchArchivedStoriesByUser = asyncHandler(async (req, res) => {
             .sort({ createdAt: -1 })
             .skip(skip)
             .limit(parseInt(limit))
-            .select("-viewers -mediaType") // remove viewers and mediaType from response
+            .select("-mediaType")
             .lean()
             .exec(),
         Story.countDocuments({ userId, isArchived: true })
     ]);
 
     // Map mediaType to postType in response if needed
+    // The owner's archive carries what the story collected while it was live
+    // (Phase 2 #32): likes, comments and viewers. GET /stories/:id/likes,
+    // /comments and /viewers list them. Anyone else sees the stories only.
     const storiesWithPostType = stories.map(story => {
         story.postType = story.mediaType;
         delete story.mediaType;
+        if (isOwnStory) {
+            const ownerId = String(story.userId);
+            story.viewerCount = new Set((story.viewers || []).map(String).filter(v => v !== ownerId)).size;
+        }
+        delete story.viewers;
+        shapeStoryEngagement(story, viewerId, isOwnStory);
         return story;
     });
 
@@ -520,6 +537,7 @@ const toStoryResponse = (story) => {
     obj.postType = obj.mediaType;
     delete obj.mediaType;
     delete obj.viewers;
+    shapeStoryEngagement(obj, story.userId, true);
     return obj;
 };
 

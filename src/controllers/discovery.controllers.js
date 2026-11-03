@@ -10,6 +10,9 @@ import { FeedCacheManager } from '../utils/cache.utils.js';
 import { resetReelsCache } from './reel.controllers.js';
 import { getSettingValue } from '../utils/appSettings.utils.js';
 import { DEFAULT_CONTENT_CATEGORIES, MAX_PREFERRED_CATEGORIES } from '../constants/contentCategories.js';
+import Post from '../models/userPost.models.js';
+import PostInteraction from '../models/postInteraction.models.js';
+import { getFollowingIdSet } from '../utils/followEngagement.utils.js';
 
 const refreshFeedsFor = async (userId) => {
     await Promise.allSettled([
@@ -105,4 +108,67 @@ export const undoNotInterested = asyncHandler(async (req, res) => {
     await NotInterested.deleteOne({ userId, postId });
     await refreshFeedsFor(userId);
     return res.status(200).json(new ApiResponse(200, { postId, notInterested: false }, 'Undone'));
+});
+
+// ── New-post ring (#55) ──────────────────────────────────────────────────────
+
+const RING_WINDOW_MS = 72 * 60 * 60 * 1000;
+
+/**
+ * GET /api/v1/users/me/new-post-ring — creators the caller follows who
+ * posted in the last 3 days something the caller hasn't opened yet. The
+ * clients draw a glowing ring (not the story ring) around them. Opening one
+ * of those posts records a view, which clears the ring on the next fetch.
+ */
+export const getNewPostRing = asyncHandler(async (req, res) => {
+    const userId = req.user._id;
+    const following = [...(await getFollowingIdSet(userId))]
+        .filter((id) => mongoose.Types.ObjectId.isValid(id))
+        .map((id) => new mongoose.Types.ObjectId(id));
+    if (!following.length) return res.status(200).json(new ApiResponse(200, { creators: [] }, 'Nothing new'));
+
+    const since = new Date(Date.now() - RING_WINDOW_MS);
+    const recent = await Post.aggregate([
+        {
+            $match: {
+                userId: { $in: following },
+                createdAt: { $gte: since },
+                status: { $in: ['published', null] },
+                'settings.privacy': { $ne: 'private' },
+                postType: { $in: ['photo', 'reel', 'video', 'tweet'] },
+            },
+        },
+        { $sort: { createdAt: -1 } },
+        { $group: { _id: '$userId', latestAt: { $first: '$createdAt' }, postIds: { $push: '$_id' } } },
+        { $project: { latestAt: 1, postIds: { $slice: ['$postIds', 20] } } },
+        { $sort: { latestAt: -1 } },
+        { $limit: 60 },
+    ]);
+    if (!recent.length) return res.status(200).json(new ApiResponse(200, { creators: [] }, 'Nothing new'));
+
+    const seen = await PostInteraction.find({
+        userId,
+        interactionType: 'view',
+        postId: { $in: recent.flatMap((r) => r.postIds) },
+    }).select('postId').lean();
+    const seenSet = new Set(seen.map((s) => String(s.postId)));
+
+    const withUnseen = recent
+        .map((r) => ({ userId: r._id, latestAt: r.latestAt, unseenPostIds: r.postIds.filter((id) => !seenSet.has(String(id))) }))
+        .filter((r) => r.unseenPostIds.length)
+        .slice(0, 30);
+    const users = await User.find({ _id: { $in: withUnseen.map((r) => r.userId) }, isDeleted: { $ne: true }, accountStatus: 'active' })
+        .select('username fullName profileImageUrl').lean();
+    const byId = new Map(users.map((u) => [String(u._id), u]));
+
+    return res.status(200).json(new ApiResponse(200, {
+        creators: withUnseen
+            .filter((r) => byId.has(String(r.userId)))
+            .map((r) => ({
+                user: byId.get(String(r.userId)),
+                latestAt: r.latestAt,
+                unseenCount: r.unseenPostIds.length,
+                latestPostId: r.unseenPostIds[0],
+            })),
+    }, 'New posts from people you follow'));
 });

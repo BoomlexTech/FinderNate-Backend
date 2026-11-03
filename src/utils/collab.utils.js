@@ -45,3 +45,11 @@ export const attachCollaborators = async (posts, viewerId = null) => {
     }
     return posts;
 };
+
+/** Posts on a profile: the user's own plus accepted collabs (#50). */
+export const authorOrCollabFilter = (userId) => ({
+    $or: [
+        { userId },
+        { collaborators: { $elemMatch: { userId, status: 'accepted' } } },
+    ],
+});

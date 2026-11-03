@@ -2,6 +2,9 @@ import mongoose from 'mongoose';
 import Post from '../models/userPost.models.js';
 import { notifyActivity } from './activityNotify.utils.js';
 import { getSettingValue } from './appSettings.utils.js';
+import { milestonesToAnnounce, milestoneMessage } from './viewMilestones.rules.js';
+
+export { milestonesToAnnounce, milestoneMessage };
 
 /**
  * Unique views and listing view milestones (Phase 2 #46).
@@ -13,17 +16,6 @@ import { getSettingValue } from './appSettings.utils.js';
  */
 export const DEFAULT_VIEW_MILESTONES = [50, 100, 500];
 const LISTING_TYPES = ['product', 'service', 'business'];
-
-/** Thresholds reached by `views` that haven't been announced yet. Pure. */
-export const milestonesToAnnounce = (views, thresholds, alreadyAnnounced = []) => {
-    const done = new Set((alreadyAnnounced || []).map(Number));
-    return [...new Set((thresholds || []).map(Number))]
-        .filter((t) => Number.isFinite(t) && t > 0 && views >= t && !done.has(t))
-        .sort((a, b) => a - b);
-};
-
-export const milestoneMessage = (threshold) =>
-    `Your listing reached ${threshold} views. It's gaining attention, consider boosting it`;
 
 /**
  * Count first-time views by `viewerId` of `postIds` (the author's own views

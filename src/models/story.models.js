@@ -31,6 +31,10 @@ const StorySchema = new mongoose.Schema({
         default: undefined
     },
     commentsCount: { type: Number, default: 0 },
+    // Set when the expiry job kept this story because people had liked or
+    // commented on it: it went to the owner's archive, with its likes,
+    // comments and viewers, instead of being deleted (Phase 2 #32).
+    autoArchivedAt: { type: Date, default: null },
     // Phase 2 #56: a story that reposts a post or vibe. mediaUrl then points
     // at the ORIGINAL post's media, which this story does not own: the purge
     // job and deleteStory must never delete it from the CDN.

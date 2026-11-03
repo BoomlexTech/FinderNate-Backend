@@ -12,8 +12,10 @@ import PostInteraction from '../models/postInteraction.models.js';
  */
 export const FRESH_WINDOW_MS = 48 * 60 * 60 * 1000;
 
+const idOf = (post) => post?._id ?? post?.id ?? post?.postId;
+
 export const seenFlagsFor = (post, seenIds, now = Date.now()) => {
-    const isSeen = seenIds.has(String(post._id));
+    const isSeen = seenIds.has(String(idOf(post)));
     const created = post.createdAt ? new Date(post.createdAt).getTime() : 0;
     return { isSeen, isFresh: !isSeen && created > 0 && now - created <= FRESH_WINDOW_MS };
 };
@@ -23,7 +25,7 @@ export const annotateSeen = async (posts, viewerId) => {
     let seenIds = new Set();
     if (viewerId) {
         try {
-            const ids = posts.map((p) => p?._id).filter((id) => id && mongoose.Types.ObjectId.isValid(String(id)));
+            const ids = posts.map(idOf).filter((id) => id && mongoose.Types.ObjectId.isValid(String(id)));
             const rows = await PostInteraction.find({
                 userId: viewerId,
                 postId: { $in: ids },

@@ -255,6 +255,9 @@ import boostRouter from "./routes/boost.routes.js";
 import orderRouter from "./routes/order.routes.js";
 import invoiceRouter from "./routes/invoice.routes.js";
 import legalRouter from "./routes/legal.routes.js";
+import binRouter from "./routes/bin.routes.js";
+import draftRouter from "./routes/draft.routes.js";
+import { metaRouter, emailRouter } from "./routes/meta.routes.js";
 
 
 
@@ -282,6 +285,11 @@ app.use("/api/v1/share", shareRouter);
 app.use("/api/v1/payments", paymentRouter);
 app.use("/api/v1/boosts", boostRouter);
 app.use("/api/v1/orders", orderRouter);
+// Phase 2
+app.use("/api/v1/bin", binRouter);
+app.use("/api/v1/drafts", draftRouter);
+app.use("/api/v1/meta", metaRouter);
+app.use("/api/v1/email", emailRouter);
 app.use("/api/v1/invoices", invoiceRouter);
 app.use("/api/v1/legal", legalRouter);
 

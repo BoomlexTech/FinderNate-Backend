@@ -341,3 +341,34 @@ export const schedulePost = asyncHandler(async (req, res) => {
 
     return res.status(200).json(new ApiResponse(200, post, "Post scheduled successfully"));
 });
+
+/**
+ * PATCH /posts/:postId/cover (multipart "thumbnail") — choose a vibe's cover
+ * after posting (Phase 2 #71). The clients pick a frame from the video or an
+ * image; either arrives as an image file. On create, the same "thumbnail"
+ * field already sets the cover.
+ */
+export const updatePostCover = asyncHandler(async (req, res) => {
+    const { postId } = req.params;
+    const userId = req.user?._id;
+    const file = req.files?.thumbnail?.[0] || req.file;
+    if (!file?.buffer) throw new ApiError(400, "Attach the cover image");
+    if (!file.mimetype?.startsWith("image/")) throw new ApiError(400, "The cover must be an image");
+    if (file.size > 10 * 1024 * 1024) throw new ApiError(400, "The cover image can be up to 10 MB");
+    if (!mongoose.Types.ObjectId.isValid(postId)) throw new ApiError(404, "Post not found");
+
+    const post = await Post.findById(postId).select("userId media").lean();
+    if (!post) throw new ApiError(404, "Post not found");
+    if (post.userId.toString() !== userId.toString()) throw new ApiError(403, "You can only change your own post's cover");
+    const index = (post.media || []).findIndex((m) => m.type === "video");
+    if (index < 0) throw new ApiError(400, "Only a video or vibe has a cover");
+
+    const { uploadBufferToBunny, generateOptimizedImageUrl } = await import("../../utils/bunny.js");
+    const result = await uploadBufferToBunny(file.buffer, "posts");
+    const coverUrl = generateOptimizedImageUrl(result.secure_url, { width: 300, height: 300, crop: 'fill' });
+
+    await Post.updateOne({ _id: postId }, { $set: { [`media.${index}.thumbnailUrl`]: coverUrl, updatedAt: new Date() } });
+    const { invalidatePostCaches } = await import("./helpers.js");
+    await invalidatePostCaches(postId, userId);
+    return res.status(200).json(new ApiResponse(200, { postId, thumbnailUrl: coverUrl }, "Cover updated"));
+});

@@ -6,6 +6,10 @@ import { cacheSearchResults } from "../middlewares/cache.middleware.js";
 import { authRateLimit, loginRateLimit } from "../middlewares/rateLimiter.middleware.js";
 import { loginUser, logOutUser, registerUser, verifyRegistrationOTP, resendRegistrationOTP, getUserProfile, updateUserProfile, changePassword, deleteAccount, searchUsers, verifyEmailWithOTP, uploadProfileImage, sendVerificationOTPForEmail, sendPasswordResetOTP, resetPasswordWithOTP, getOtherUserProfile, checkTokenExpiry, togglePhoneNumberVisibility, toggleAddressVisibility, trackSearch, getPopularSearches, blockUser, unblockUser, getBlockedUsers, checkIfUserBlocked, getUsernameSuggestions, checkUsernameAvailability, toggleFullPrivateAccount, toggleServiceAutoFill, getPreviousServicePostData, toggleProductAutoFill, getPreviousProductPostData, saveFCMToken, testFCMNotification, checkFirebaseStatus, updateMessagingPrivacy, getMessagingPrivacy, sendPhoneVerificationOtp, verifyAndUpdatePhone, getOtpStatus, sendEmailChangeOtp, verifyAndUpdateEmail } from "../controllers/user.controllers.js";
 import { getChatWallpaper, updateChatWallpaper } from "../controllers/user/chatWallpaper.js";
+import { getWatchHistory, removeFromHistory, clearHistory, updateHistorySettings } from "../controllers/history.controllers.js";
+import { getMyCategoryPreferences, updateMyCategoryPreferences, getNewPostRing } from "../controllers/discovery.controllers.js";
+import { getActivitySettings, updateActivitySettings } from "../controllers/user/activitySettings.js";
+import { getProfileVisitors } from "../controllers/profileVisitors.controllers.js";
 import { searchAllContent } from "../controllers/searchAllContent.controllers.js";
 import { followUser, unfollowUser, getFollowers, getFollowing, approveFollowRequest, rejectFollowRequest, getPendingFollowRequests, getSentFollowRequests } from "../controllers/follower.controllers.js";
 import { getSearchSuggestions } from "../controllers/searchSuggestion.controllers.js";
@@ -30,6 +34,20 @@ const router = Router();
 //                    cache blip must not take sign-in down platform-wide.
 // See rateLimiter.middleware.js for the full reasoning on both.
 // ─────────────────────────────────────────────────────────────────────────────
+// ── Phase 2: the signed-in account's own activity ───────────────────────────
+// Watch history (#14)
+router.get("/me/history", verifyJWT, getWatchHistory);
+router.delete("/me/history", verifyJWT, clearHistory);
+router.patch("/me/history/settings", verifyJWT, updateHistorySettings);
+router.delete("/me/history/:postId", verifyJWT, removeFromHistory);
+// Category preferences (#26)
+router.route("/me/categories").get(verifyJWT, getMyCategoryPreferences).put(verifyJWT, updateMyCategoryPreferences);
+// Mentions, history pause, profile visits and email digest settings
+router.route("/me/activity-settings").get(verifyJWT, getActivitySettings).patch(verifyJWT, updateActivitySettings);
+// Profile visitors (#65) and the new-post ring (#55)
+router.get("/me/profile-visitors", verifyJWT, getProfileVisitors);
+router.get("/me/new-post-ring", verifyJWT, getNewPostRing);
+
 router.route("/register").post(authRateLimit, registerUser);
 router.route("/register/verify").post(authRateLimit, verifyRegistrationOTP);
 router.route("/register/resend-otp").post(authRateLimit, resendRegistrationOTP);

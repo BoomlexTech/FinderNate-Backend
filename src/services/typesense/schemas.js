@@ -54,6 +54,8 @@ export const postsSchema = {
         { name: 'brand', type: 'string', optional: true, facet: true },
         { name: 'category', type: 'string', optional: true, facet: true },
         { name: 'subcategory', type: 'string', optional: true, facet: true },
+        // Phase 2 #17: every subcategory of the post (up to 10).
+        { name: 'subcategories', type: 'string[]', optional: true, facet: true },
         { name: 'tags', type: 'string[]', optional: true, facet: true },
         { name: 'price', type: 'float', optional: true },
         { name: 'currency', type: 'string', optional: true },
@@ -194,7 +196,11 @@ export const postToDoc = (post, author = null) => {
         title,
         brand: str(product.brand),
         category,
-        subcategory,
+        subcategory: subcategory || str(post.subcategories?.[0]),
+        subcategories: [...new Set([
+            ...(Array.isArray(post.subcategories) ? post.subcategories : []),
+            ...(subcategory ? [subcategory] : []),
+        ].map(str).filter(Boolean))],
         tags,
         price,
         currency: str(product.currency) || str(service.currency),

@@ -21,7 +21,12 @@ import {
     editPost,
     togglePostPrivacy,
     updatePostInteractionSettings,
+    updatePostCover,
 } from "../controllers/post.controllers.js";
+import { pinComment, unpinComment } from "../controllers/comment.controllers.js";
+import { markNotInterested, undoNotInterested } from "../controllers/discovery.controllers.js";
+import { listCollections, createCollection, renameCollection, deleteCollection, addToCollection, removeFromCollection } from "../controllers/collections.controllers.js";
+import { inviteCollaborator, removeCollaborator, acceptCollab, declineCollab, listCollabInvites } from "../controllers/collab.controllers.js";
 import { getHomeFeed } from "../controllers/homeFeed.controllers.js";
 import { likePost, unlikePost, likeComment, unlikeComment, getLikedByUsers } from "../controllers/like.controllers.js";
 import { createComment, getCommentsByPost, getCommentById, updateComment, deleteComment } from "../controllers/comment.controllers.js";
@@ -138,6 +143,25 @@ router.route("/:postId/privacy").put(verifyJWT, togglePostPrivacy);
 
 // Turn likes / comments / sharing on or off for one post (Phase 2 #18)
 router.route("/:postId/interaction-settings").patch(verifyJWT, updatePostInteractionSettings);
+
+// ── Phase 2 (all before the /:postId catch-all) ─────────────────────────────
+// Pinned comment (#53)
+router.route("/:postId/pinned-comment").patch(verifyJWT, pinComment).delete(verifyJWT, unpinComment);
+// Not interested (#68)
+router.route("/:postId/not-interested").post(verifyJWT, markNotInterested).delete(verifyJWT, undoNotInterested);
+// Change a vibe's cover (#71)
+router.route("/:postId/cover").patch(upload.fields([{ name: "thumbnail", maxCount: 1 }]), verifyJWT, updatePostCover);
+// Saved collections (#54); a collection's posts: GET /saved?collectionId=
+router.route("/collections").get(verifyJWT, listCollections).post(verifyJWT, createCollection);
+router.route("/collections/:collectionId").patch(verifyJWT, renameCollection).delete(verifyJWT, deleteCollection);
+router.route("/collections/:collectionId/posts").post(verifyJWT, addToCollection);
+router.route("/collections/:collectionId/posts/:postId").delete(verifyJWT, removeFromCollection);
+// Collab posts (#50, #57)
+router.route("/collab/invites").get(verifyJWT, listCollabInvites);
+router.route("/:postId/collaborators").post(verifyJWT, inviteCollaborator);
+router.route("/:postId/collaborators/:userId").delete(verifyJWT, removeCollaborator);
+router.route("/:postId/collab/accept").post(verifyJWT, acceptCollab);
+router.route("/:postId/collab/decline").post(verifyJWT, declineCollab);
 
 // Online store — public, no auth required (must be before /:postId catch-all)
 router.route("/online-store/products").get(getOnlineStoreProducts);

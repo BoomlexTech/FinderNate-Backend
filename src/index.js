@@ -8,6 +8,9 @@ import { startSubscriptionExpiryJob } from './jobs/subscriptionExpiry.job.js';
 import { ensureCollections } from './services/typesense/index.js';
 import { startShareSyncJob } from './jobs/shareSync.job.js';
 import { startStoryExpiryJob } from './jobs/storyExpiry.job.js';
+import { startBinPurgeJob } from './jobs/binPurge.job.js';
+import { startTrendingJobs } from './jobs/trending.job.js';
+import { startEmailDigestJob } from './jobs/emailDigest.job.js';
 import { startLikeWorker } from './queues/likeQueue.js';
 // import { seedLikesToRedis } from './scripts/seedLikesToRedis.js';
 import { redisClient } from './config/redis.config.js';
@@ -81,6 +84,10 @@ connectDB()
             startSubscriptionExpiryJob();
             startShareSyncJob();
             startStoryExpiryJob();
+            // Phase 2
+            startBinPurgeJob();
+            startTrendingJobs();
+            startEmailDigestJob();
             startLikeWorker();
         });
 

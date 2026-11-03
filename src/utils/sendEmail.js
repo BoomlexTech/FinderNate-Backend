@@ -64,7 +64,7 @@ const FROM_NAME = process.env.EMAIL_FROM_NAME?.trim() || 'FinderNate';
 // more reason to be filtered — and it is also what a screen reader, a watch and
 // a plain-text client actually read. Callers that omit it still work exactly as
 // before; nodemailer just sends the HTML part alone.
-export const sendEmail = async ({ to, subject, html, text }) => {
+export const sendEmail = async ({ to, subject, html, text, headers }) => {
     // The From: domain must match the product's domain and have SPF + DKIM
     // published for it, or Gmail and Outlook score the message as spoofing and
     // file it as spam — which for the guest-checkout claim link means the buyer
@@ -99,6 +99,8 @@ export const sendEmail = async ({ to, subject, html, text }) => {
             // `text: undefined` is fine, but being explicit keeps the sent
             // message identical to before for the callers not yet templated.
             ...(text ? { text } : {}),
+            // e.g. List-Unsubscribe for the daily digest (Phase 2 #10).
+            ...(headers ? { headers } : {}),
         });
 
         return { success: true, messageId: info?.messageId };

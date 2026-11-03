@@ -1,3 +1,4 @@
+import { annotateSeen } from '../utils/seenFlags.utils.js';
 import mongoose from 'mongoose';
 import { User } from '../models/user.models.js';
 import Business from '../models/business.models.js';
@@ -64,6 +65,7 @@ const postToProductCard = (p) => {
     const author = Array.isArray(p._author) ? p._author[0] : p._author;
     return {
         _id: p._id,
+        createdAt: p.createdAt,
         name: prod.name || null,
         image: (Array.isArray(prod.images) && prod.images[0]) || p.media?.[0]?.thumbnailUrl || p.media?.[0]?.url || null,
         price: Number.isFinite(prod.price) ? prod.price : null,
@@ -514,6 +516,7 @@ export const searchProducts = asyncHandler(async (req, res) => {
                 // page an empty result is the honest answer — it ends
                 // pagination instead of showing the user the same product twice.
                 if (products.length > 0 || page > 1) {
+                    await annotateSeen(products, req.user?._id || null);
                     // `found` is the engine's total, which still counts the
                     // hits just dropped; report what is actually deliverable so
                     // the page count cannot promise rows that do not exist.
@@ -556,13 +559,18 @@ export const searchProducts = asyncHandler(async (req, res) => {
             { 'customization.product.brand': rx },
             { 'customization.product.category': rx },
             { 'customization.product.subcategory': rx },
+            { subcategories: rx },
             { 'customization.product.tags': rx },
             { 'customization.product.description': rx },
             { caption: rx },
         ];
     }
     if (filters.category) filter['customization.product.category'] = filters.category;
-    if (filters.subcategory) filter['customization.product.subcategory'] = filters.subcategory;
+    if (filters.subcategory) {
+        // Either the legacy single field or any of the post's subcategories (#17).
+        const subRx = new RegExp(`^${escapeRegex(String(filters.subcategory))}$`, 'i');
+        filter.$and = [...(filter.$and || []), { $or: [{ 'customization.product.subcategory': subRx }, { subcategories: subRx }] }];
+    }
     if (filters.brand) filter['customization.product.brand'] = filters.brand;
     // Parity with the Typesense clauses above — these were accepted as query
     // params and then silently dropped whenever Typesense was unavailable.
@@ -638,12 +646,14 @@ export const searchProducts = asyncHandler(async (req, res) => {
                     pipeline: [{ $project: { username: 1, profileImageUrl: 1 } }],
                 }
             },
-            { $project: { 'customization.product': 1, media: 1, userId: 1, contentType: 1, _author: 1 } },
+            { $project: { 'customization.product': 1, media: 1, userId: 1, contentType: 1, createdAt: 1, _author: 1 } },
         ]),
         Post.countDocuments(filter),
     ]);
+    const cards = posts.map(postToProductCard);
+    await annotateSeen(cards, req.user?._id || null);
     return res.status(200).json(new ApiResponse(200, {
-        products: posts.map(postToProductCard),
+        products: cards,
         facets: [],
         pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
     }, 'Product search results'));

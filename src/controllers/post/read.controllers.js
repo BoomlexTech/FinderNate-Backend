@@ -1,3 +1,5 @@
+import { authorOrCollabFilter, attachCollaborators } from '../../utils/collab.utils.js';
+import { annotateSeen } from '../../utils/seenFlags.utils.js';
 import mongoose from 'mongoose';
 import { asyncHandler } from "../../utils/asyncHandler.js";
 import { ApiError } from "../../utils/ApiError.js";
@@ -229,6 +231,10 @@ export const getPostById = asyncHandler(async (req, res) => {
         post.likedByPreview = preview.likedByText ? { text: preview.likedByText, previewUser: preview.previewUser, othersCount: preview.othersCount } : null;
     }
 
+    // Collab co-authors and seen flags (#50, #33).
+    await attachCollaborators([post], currentUser?._id || null);
+    await annotateSeen([post], currentUser?._id || null);
+
     const [postWithBadge] = await addBadgesToNestedUsers([post]);
 
     return res.status(200).json(new ApiResponse(200, { ...postWithBadge, isFollowing }, "Post fetched successfully"));
@@ -244,7 +250,8 @@ export const getMyPosts = asyncHandler(async (req, res) => {
     page = parseInt(page) > 0 ? parseInt(page) : 1;
     limit = parseInt(limit) > 0 ? parseInt(limit) : 10;
 
-    const filter = { userId };
+    // Own posts plus accepted collabs (#50).
+    const filter = { ...authorOrCollabFilter(userId) };
     if (postType) filter.postType = postType;
     if (contentType) filter.contentType = contentType;
 
@@ -274,6 +281,7 @@ export const getMyPosts = asyncHandler(async (req, res) => {
         return postObj;
     });
 
+    await attachCollaborators(postsWithThumbnails, req.user?._id || null);
     const currentUserId = req.user?._id?.toString();
     const [likedSet, likeCountMap, likedByUsersMap] = await Promise.all([
         currentUserId ? batchIsLikedByUser(req.user._id, postsWithThumbnails.map(p => p._id)) : Promise.resolve(new Set()),
@@ -395,7 +403,8 @@ export const getUserProfilePosts = asyncHandler(async (req, res) => {
     const sortObj = { [sortBy]: sortDirection };
 
     const filter = {
-        userId,
+        // Own posts plus accepted collabs (#50).
+        ...authorOrCollabFilter(userId),
         status: { $in: ['published', 'scheduled'] }
     };
 
@@ -517,6 +526,7 @@ export const getUserProfilePosts = asyncHandler(async (req, res) => {
             });
         }
 
+        await attachCollaborators(postsAfterBusinessFilter, currentUserId);
         const enrichedPosts = await enrichWithRatings(postsAfterBusinessFilter, 'userId');
         const postsWithBadges = await addBadgesToNestedUsers(enrichedPosts);
 

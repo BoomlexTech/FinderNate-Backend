@@ -1,3 +1,4 @@
+import { recordProfileVisit } from '../profileVisitors.controllers.js';
 import { asyncHandler } from "../../utils/asyncHandler.js";
 import { User } from "../../models/user.models.js";
 import { ApiError } from "../../utils/ApiError.js";
@@ -367,6 +368,10 @@ const getOtherUserProfile = asyncHandler(async (req, res) => {
     }
 
     const isFollowing = await getFollowStatus(req.user._id, targetUser._id);
+
+    // Profile visitors (Phase 2 #65): skipped for your own profile and for
+    // visitors who hide their visits. Detached so it never slows the profile.
+    recordProfileVisit(req.user._id, targetUser._id).catch(() => {});
 
     const pendingRequest = await FollowRequest.findOne({
         requesterId: req.user._id,

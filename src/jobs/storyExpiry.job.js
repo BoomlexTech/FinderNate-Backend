@@ -3,6 +3,14 @@ import Story from '../models/story.models.js';
 import { deleteFromBunny } from '../utils/bunny.js';
 import StoryComment from '../models/storyComment.models.js';
 
+/** Liked or commented on, so worth keeping in the archive (Phase 2 #32). */
+export const hasStoryEngagement = async (story) => {
+    if ((story.likedBy?.length || 0) > 0 || (story.commentsCount || 0) > 0) return true;
+    // commentsCount is maintained by the comment endpoints; the row check
+    // covers a counter that drifted.
+    return !!(await StoryComment.exists({ storyId: story._id }));
+};
+
 /**
  * Story Expiry Cron Job
  * Runs every 15 minutes and removes stories that are more than 24 hours old.
@@ -85,6 +93,7 @@ export const purgeExpiredStories = async ({
     };
 
     let deleted = 0;
+    let archived = 0;
     let mediaFailed = 0;
     let claimedElsewhere = 0;
     let batches = 0;
@@ -94,7 +103,7 @@ export const purgeExpiredStories = async ({
             batches++;
 
             const candidates = await Story.find(expiredFilter)
-                .select('_id mediaUrl')
+                .select('_id mediaUrl commentsCount likedBy')
                 .sort({ expiresAt: 1 })
                 .limit(batchSize)
                 .lean();
@@ -102,6 +111,19 @@ export const purgeExpiredStories = async ({
             if (candidates.length === 0) break;
 
             for (const candidate of candidates) {
+                // A story people liked or commented on is kept: it moves to
+                // the owner's archive with its likes, comments and viewers
+                // instead of being deleted (Phase 2 #32). Only the owner can
+                // see it there.
+                if (await hasStoryEngagement(candidate)) {
+                    const kept = await Story.updateOne(
+                        { _id: candidate._id, isArchived: false, $or: claimable },
+                        { $set: { isArchived: true, autoArchivedAt: new Date() } }
+                    );
+                    if (kept.modifiedCount) archived++;
+                    continue;
+                }
+
                 // Atomic claim. If another worker got here first this returns
                 // null and we simply move on — no double delete, no error.
                 const claimed = await Story.findOneAndUpdate(
@@ -139,8 +161,6 @@ export const purgeExpiredStories = async ({
                 }
 
                 await Story.deleteOne({ _id: candidate._id });
-                // Story comments (#32) go with the story.
-                await StoryComment.deleteMany({ storyId: candidate._id }).catch(() => {});
                 deleted++;
             }
 
@@ -148,13 +168,13 @@ export const purgeExpiredStories = async ({
             if (candidates.length < batchSize) break;
         }
 
-        if (deleted > 0 || mediaFailed > 0) {
+        if (deleted > 0 || archived > 0 || mediaFailed > 0) {
             console.log(
-                `🧹 [StoryExpiry] Purged ${deleted} expired stories (${mediaFailed} kept after media-delete failure, ${claimedElsewhere} handled by another worker)`
+                `🧹 [StoryExpiry] Purged ${deleted} expired stories, archived ${archived} with likes or comments (${mediaFailed} kept after media-delete failure, ${claimedElsewhere} handled by another worker)`
             );
         }
 
-        return { success: true, deleted, mediaFailed, claimedElsewhere, batches };
+        return { success: true, deleted, archived, mediaFailed, claimedElsewhere, batches };
     } catch (error) {
         console.error('❌ [StoryExpiry] Story expiry job failed:', error);
         return { success: false, deleted, mediaFailed, claimedElsewhere, batches, error: error.message };

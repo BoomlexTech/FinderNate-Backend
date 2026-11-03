@@ -25,8 +25,8 @@ const UserSchema = new mongoose.Schema({
     // Phase 2 #64: who may @mention this account. 'following' = only accounts
     // this user follows.
     mentionPrivacy: { type: String, enum: ['everyone', 'following', 'nobody'], default: 'everyone' },
-    // Phase 2 #14: while true, opening a post or vibe is not written to the
-    // watch history (the post's own view count still counts it).
+    // Phase 2 #14: while true, opening a post or vibe records nothing about
+    // this viewer: no history entry, no unique view, no "seen" flag.
     historyPaused: { type: Boolean, default: false },
     // Phase 2 #65: hide my visits from the people I look at. Reciprocal: an
     // account that hides its visits can't see its own visitors either.
