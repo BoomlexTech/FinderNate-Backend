@@ -17,6 +17,9 @@ import { addBadgesToNestedUsers } from '../utils/userBadge.utils.js';
 import { getLikedByPreview } from '../utils/likedByPreview.utils.js';
 import { batchIsLikedByUser, batchGetLikedByUsers, batchGetLikesCount, batchGetCommentsCount, batchSharedCount} from '../utils/postEngagement.utils.js';
 import { getFollowingIdSet, getPendingFollowRequestIdSet } from '../utils/followEngagement.utils.js';
+import { getFeedSignals, rankTimeExpression, excludedObjectIds } from '../utils/feedSignals.utils.js';
+import { annotateSeen } from '../utils/seenFlags.utils.js';
+import { attachCollaborators } from '../utils/collab.utils.js';
 import {
     feedBoostSlotCount,
     feedRotationSeed,
@@ -90,8 +93,10 @@ export const getHomeFeed = asyncHandler(async (req, res) => {
             //* query below already excludes them; this makes the cache-hit path
             //* agree with it instead of serving a page built before the block.
             const cachedFeed = Array.isArray(cached?.data?.feed) ? cached.data.feed : [];
-            const visibleCachedFeed = blockedUserIdSet.size
-                ? cachedFeed.filter(post => !blockedUserIdSet.has(feedPostAuthorId(post) || ''))
+            const cachedSignals = await getFeedSignals(userId);
+            const cachedExcluded = new Set(cachedSignals.excludedPostIds || []);
+            const visibleCachedFeed = (blockedUserIdSet.size || cachedExcluded.size)
+                ? cachedFeed.filter(post => !blockedUserIdSet.has(feedPostAuthorId(post) || '') && !cachedExcluded.has(String(post._id)))
                 : cachedFeed;
 
             //* A page that emptied out ENTIRELY because of a block is not worth
@@ -139,6 +144,9 @@ export const getHomeFeed = asyncHandler(async (req, res) => {
                             isFollowRequested: !!authorId && requestedSet.has(authorId),
                         };
                     });
+
+                    // Seen flags are per viewer and never cached (#33).
+                    await annotateSeen(cached.data.feed, userId);
 
                     // A cached page is still a page somebody looked at.
                     recordBoostImpressions(
@@ -209,8 +217,16 @@ export const getHomeFeed = asyncHandler(async (req, res) => {
         const commercialExemptSet = new Set(commercialExemptIds);
 
 
+        // "Not interested" / hidden posts are left out, and the viewer's
+        // category preferences and not-interested history shift rank time
+        // (Phase 2 #26, #68; utils/feedSignals.utils.js).
+        const feedSignals = await getFeedSignals(userId);
+        const excludedPostIds = excludedObjectIds(feedSignals);
+        const rankTime = rankTimeExpression(feedSignals);
+
         // ✅ 3. OPTIMIZED: Single aggregation query with privacy filtering
         const matchQuery = {
+            ...(excludedPostIds.length ? { _id: { $nin: excludedPostIds } } : {}),
             contentType: { $in: ['normal', 'service', 'product', 'business'] },
             postType: { $in: ['photo', 'reel', 'video', 'tweet'] },
             userId: { $in: viewableUserIds, $nin: blockedUsers },
@@ -347,6 +363,7 @@ export const getHomeFeed = asyncHandler(async (req, res) => {
                             0
                         ]
                     },
+                    ...(rankTime ? { rankTime } : {}),
                     // The boosted slots, in the order chosen above: n for the
                     // first, down to 1, and 0 for everything else.
                     ...(promotedPostIds.length > 0 ? {
@@ -371,6 +388,7 @@ export const getHomeFeed = asyncHandler(async (req, res) => {
                     ...(promotedPostIds.length > 0 ? { boostRank: -1 } : {}),
                     isPaidBusiness: -1,
                     isCorporate: -1,
+                    ...(rankTime ? { rankTime: -1 } : {}),
                     createdAt: -1
                 }
             },
@@ -401,6 +419,7 @@ export const getHomeFeed = asyncHandler(async (req, res) => {
                     isPaidBusiness: 0,
                     isCorporate: 0,
                     boostRank: 0,
+                    rankTime: 0,
                     userIdString: 0,
                     userInfo: 0
                 }
@@ -419,6 +438,10 @@ export const getHomeFeed = asyncHandler(async (req, res) => {
                     'settings.visibility': 1,
                     'settings.commentsEnabled': 1,
                     'settings.likesVisible': 1,
+                    // Per-post switches the clients use to hide buttons (#18).
+                    'settings.allowLikes': 1,
+                    'settings.allowComments': 1,
+                    'settings.allowShares': 1,
                     'engagement.likes': 1,
                     'engagement.comments': 1,
                     'engagement.shares': 1,
@@ -429,6 +452,11 @@ export const getHomeFeed = asyncHandler(async (req, res) => {
                     createdAt: 1,
                     updatedAt: 1,
                     isPromoted: 1,
+                    category: 1,
+                    subcategories: 1,
+                    hashtags: 1,
+                    collaborators: 1,
+                    pinnedCommentId: 1,
                     // Include customization fields (product, service, business, normal)
                     'customization.product': 1,
                     'customization.service': 1,
@@ -536,6 +564,10 @@ export const getHomeFeed = asyncHandler(async (req, res) => {
                 .map(post => ({ postId: post._id, authorId: feedPostAuthorId(post) })),
             userId
         );
+        // Collab co-authors (#50) and seen/fresh flags (#33).
+        await attachCollaborators(feedData);
+        await annotateSeen(feedData, userId);
+
         // Enrich posts with review/rating data
         const enrichedFeedData = await enrichWithRatings(feedData, 'userId');
         
@@ -593,7 +625,7 @@ export const getHomeFeed = asyncHandler(async (req, res) => {
         // Cache WITHOUT the per-viewer state (isLikedBy, follow state) — all of it
         // is computed fresh on the cache-hit path above to avoid a stale heart or
         // a "Follow" pill on someone the viewer already follows.
-        const feedToCache = feedDataWithBadges.map(({ isLikedBy, isFollowing, isFollowRequested, ...rest }) => rest);
+        const feedToCache = feedDataWithBadges.map(({ isLikedBy, isFollowing, isFollowRequested, isSeen, isFresh, ...rest }) => rest);
         const responseToCache = new ApiResponse(200, {
             feed: feedToCache,
             pagination: { page, limit, total: totalCount, totalPages: Math.ceil(totalCount / limit) }

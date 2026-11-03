@@ -9,7 +9,7 @@ import { redisClient, RedisKeys, RedisTTL } from "../config/redis.config.js";
 import { onPostLiked, onPostUnliked, batchIsLikedByUser } from "../utils/postEngagement.utils.js";
 import { likeQueue } from "../queues/likeQueue.js";
 import socketManager from "../config/socket.js";
-import { assertCanViewPostById } from "./post/visibility.js";
+import { assertCanViewPostById, assertPostInteractionAllowed } from "./post/visibility.js";
 
 const ENGAGEMENT_TTL = RedisTTL.POST_ENGAGEMENT;
 
@@ -165,6 +165,9 @@ export const likePost = asyncHandler(async (req, res) => {
     // unlike to push a notification into the blocker's tray on every call, and
     // like counters could be moved on posts the actor may not view.
     const targetPost = await assertCanViewPostById(postId, userId);
+    // The author can switch likes off per post (#18). Unliking stays allowed
+    // so an existing like can always be taken back.
+    assertPostInteractionAllowed(targetPost, userId, 'like');
 
     // Idempotent. Liking something already liked is not an error — it is a
     // client whose optimistic state drifted from the server's, which happens

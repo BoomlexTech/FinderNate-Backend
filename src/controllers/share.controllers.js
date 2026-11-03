@@ -316,7 +316,7 @@ export const getSharedPost = asyncHandler(async (req, res) => {
     post: sanitizedPost,
     shareMetadata: {
       shareUrl: `https://findernate.com/r/${postId}`,
-      canShare: true,
+      canShare: post.settings?.allowShares !== false,
       viewerCanInteract: !!viewer,
     },
   };
@@ -327,7 +327,7 @@ export const getSharedPost = asyncHandler(async (req, res) => {
     post: sanitizePostForGuest(post, null),
     shareMetadata: {
       shareUrl: `https://findernate.com/r/${postId}`,
-      canShare: true,
+      canShare: post.settings?.allowShares !== false,
       viewerCanInteract: false,
     },
   };
@@ -463,7 +463,7 @@ export const getSharedReel = asyncHandler(async (req, res) => {
     post: sanitizedPost,
     shareMetadata: {
       shareUrl: `https://findernate.com/r/${postId}`,
-      canShare: true,
+      canShare: post.settings?.allowShares !== false,
       viewerCanInteract: !!viewer,
     },
   };
@@ -473,7 +473,7 @@ export const getSharedReel = asyncHandler(async (req, res) => {
     post: sanitizePostForGuest(post, null),
     shareMetadata: {
       shareUrl: `https://findernate.com/r/${postId}`,
-      canShare: true,
+      canShare: post.settings?.allowShares !== false,
       viewerCanInteract: false,
     },
   };

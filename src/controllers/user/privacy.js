@@ -83,7 +83,9 @@ const toggleAddressVisibility = asyncHandler(async (req, res) => {
             200,
             {
                 isAddressHidden: updatedUser.isAddressHidden,
-                address: updatedUser.isAddressHidden ? null : updatedUser.address
+                address: updatedUser.isAddressHidden ? null : updatedUser.address,
+                // The same switch hides the profile's location line (#12).
+                location: updatedUser.isAddressHidden ? null : (updatedUser.location || "")
             },
             `Address ${isHidden ? 'hidden' : 'visible'} successfully`
         )

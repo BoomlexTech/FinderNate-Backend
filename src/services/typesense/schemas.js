@@ -54,6 +54,8 @@ export const postsSchema = {
         { name: 'brand', type: 'string', optional: true, facet: true },
         { name: 'category', type: 'string', optional: true, facet: true },
         { name: 'subcategory', type: 'string', optional: true, facet: true },
+        // Phase 2 #17: every subcategory of the post (up to 10).
+        { name: 'subcategories', type: 'string[]', optional: true, facet: true },
         { name: 'tags', type: 'string[]', optional: true, facet: true },
         { name: 'price', type: 'float', optional: true },
         { name: 'currency', type: 'string', optional: true },
@@ -119,7 +121,9 @@ export const userToDoc = (user, business = null) => {
         isBusinessVerified: business ? Boolean(business.isVerified) : undefined,
         businessName: business ? str(business.businessName) : undefined,
         businessCategory: business ? str(business.category) : undefined,
-        location: str(user.location),
+        // "Hide address" on the profile covers the free-text location too: a
+        // hidden location must not be searchable or shown in search results.
+        location: user.isAddressHidden ? undefined : str(user.location),
         followersCount: Array.isArray(user.followers) ? user.followers.length : 0,
         accountStatus: str(user.accountStatus) || 'active',
         createdAt: toEpoch(user.createdAt),
@@ -192,7 +196,11 @@ export const postToDoc = (post, author = null) => {
         title,
         brand: str(product.brand),
         category,
-        subcategory,
+        subcategory: subcategory || str(post.subcategories?.[0]),
+        subcategories: [...new Set([
+            ...(Array.isArray(post.subcategories) ? post.subcategories : []),
+            ...(subcategory ? [subcategory] : []),
+        ].map(str).filter(Boolean))],
         tags,
         price,
         currency: str(product.currency) || str(service.currency),

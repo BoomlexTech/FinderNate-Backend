@@ -40,6 +40,21 @@ export const ensureCollections = async () => {
         if (!(await collectionExists(schema.name))) {
             await typesenseClient.collections().create(schema);
             console.log(`🔎 Typesense: created collection "${schema.name}"`);
+            continue;
+        }
+        // Add fields introduced after the collection was created (e.g.
+        // posts.subcategories, Phase 2 #17). Existing documents pick the new
+        // field up when they are next re-indexed.
+        try {
+            const live = await typesenseClient.collections(schema.name).retrieve();
+            const have = new Set((live.fields || []).map((f) => f.name));
+            const missing = schema.fields.filter((f) => !have.has(f.name));
+            if (missing.length) {
+                await typesenseClient.collections(schema.name).update({ fields: missing });
+                console.log(`🔎 Typesense: added ${missing.map((f) => f.name).join(', ')} to "${schema.name}"`);
+            }
+        } catch (err) {
+            console.warn(`🔎 Typesense: could not update "${schema.name}" schema: ${err?.message}`);
         }
     }
 };
@@ -136,6 +151,8 @@ const PRODUCT_CARD_FIELDS = 'id,title,image,price,currency,category,subcategory,
 
 const toProductCard = (d) => ({
     _id: d.id,
+    createdAt: d.createdAt ? new Date(d.createdAt).toISOString() : null,
+    subcategories: d.subcategories || [],
     name: d.title || null,
     image: d.image || null,
     price: d.price ?? null,
@@ -256,7 +273,7 @@ export const searchContent = async ({
     if (blocked) filterClauses.push(blocked.replace(/^ && /, ''));
     if (contentType) filterClauses.push(exact('contentType', contentType));
     if (filters.category) filterClauses.push(exact('category', filters.category));
-    if (filters.subcategory) filterClauses.push(exact('subcategory', filters.subcategory));
+    if (filters.subcategory) filterClauses.push(`(${exact('subcategory', filters.subcategory)} || ${exact('subcategories', filters.subcategory)})`);
     if (filters.brand) filterClauses.push(exact('brand', filters.brand));
     if (filters.city) filterClauses.push(exact('locationCity', filters.city));
     if (filters.country) filterClauses.push(exact('locationCountry', filters.country));
@@ -281,8 +298,8 @@ export const searchContent = async ({
 
     const res = await typesenseClient.collections(POSTS_COLLECTION).documents().search({
         q: query,
-        query_by: 'title,brand,tags,hashtags,category,subcategory,caption,description',
-        query_by_weights: '6,4,4,3,3,3,2,1',
+        query_by: 'title,brand,tags,hashtags,category,subcategory,subcategories,caption,description',
+        query_by_weights: '6,4,4,3,3,3,3,2,1',
         prefix: true,
         num_typos: 2,
         page,

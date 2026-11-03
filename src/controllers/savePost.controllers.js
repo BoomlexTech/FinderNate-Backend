@@ -7,6 +7,16 @@ import { User } from '../models/user.models.js';
 import Post from '../models/userPost.models.js';
 import { batchIsLikedByUser, batchGetLikedByUsers, batchGetLikesCount } from '../utils/postEngagement.utils.js';
 import { assertCanViewPostById, createPostVisibilityChecker } from './post/visibility.js';
+import SaveCollection from '../models/saveCollection.models.js';
+
+/** The caller's own collection, or a 404. */
+const resolveOwnCollectionId = async (collectionId, userId) => {
+    if (!collectionId) return null;
+    if (!mongoose.Types.ObjectId.isValid(String(collectionId))) throw new ApiError(404, "Collection not found");
+    const found = await SaveCollection.exists({ _id: collectionId, userId });
+    if (!found) throw new ApiError(404, "Collection not found");
+    return found._id;
+};
 
 /**
  * Save a post to the user's saved posts collection (Instagram-style: Always private)
@@ -14,7 +24,7 @@ import { assertCanViewPostById, createPostVisibilityChecker } from './post/visib
  * @access Private
  */
 const savePost = asyncHandler(async (req, res) => {
-    const { postId } = req.body;
+    const { postId, collectionId } = req.body;
     const userId = req.user._id;
 
     if (!postId) {
@@ -22,6 +32,9 @@ const savePost = asyncHandler(async (req, res) => {
     }
 
     try {
+        // Optional: file the save into one of the caller's collections (#54).
+        const targetCollectionId = await resolveOwnCollectionId(collectionId, userId);
+
         // Saving is a READ channel: GET /post/saved plays the row back with the
         // caption, description, media and the whole customization object. So
         // anything the caller may not view must not be savable either. This
@@ -34,6 +47,12 @@ const savePost = asyncHandler(async (req, res) => {
         const existingSave = await SavedPost.findOne({ userId, postId });
 
         if (existingSave) {
+            if (targetCollectionId) {
+                await SavedPost.updateOne({ _id: existingSave._id }, { $addToSet: { collectionIds: targetCollectionId } });
+                await SaveCollection.updateOne({ _id: targetCollectionId }, { $set: { updatedAt: new Date() } });
+                const updated = await SavedPost.findById(existingSave._id).lean();
+                return res.status(200).json(new ApiResponse(200, updated, "Saved to collection"));
+            }
             return res.status(200).json(
                 new ApiResponse(200, existingSave, "Post already saved")
             );
@@ -42,8 +61,12 @@ const savePost = asyncHandler(async (req, res) => {
         // Save post (always private, like Instagram)
         const savedPost = await SavedPost.create({
             userId,
-            postId
+            postId,
+            ...(targetCollectionId ? { collectionIds: [targetCollectionId] } : {})
         });
+        if (targetCollectionId) {
+            await SaveCollection.updateOne({ _id: targetCollectionId }, { $set: { updatedAt: new Date() } });
+        }
 
         // Update save count in the post (optional)
         // await Post.findByIdAndUpdate(postId, { $inc: { 'engagement.saves': 1 } });
@@ -115,12 +138,15 @@ const unsavePost = asyncHandler(async (req, res) => {
  */
 const getSavedPosts = asyncHandler(async (req, res) => {
     const userId = req.user._id;
-    const { page = 1, limit = 10 } = req.query;
+    const { page = 1, limit = 10, collectionId } = req.query;
     const skip = (page - 1) * limit;
+
+    // ?collectionId= lists one collection (#54); without it, everything saved.
+    const collectionFilter = collectionId ? { collectionIds: await resolveOwnCollectionId(collectionId, userId) } : {};
 
     try {
         // Find all saved posts for this user only
-        const fetchedSavedPosts = await SavedPost.find({ userId })
+        const fetchedSavedPosts = await SavedPost.find({ userId, ...collectionFilter })
             .sort({ savedAt: -1 })
             .skip(skip)
             .limit(parseInt(limit))
@@ -152,7 +178,7 @@ const getSavedPosts = asyncHandler(async (req, res) => {
         const savedPosts = fetchedSavedPosts.filter((_, i) => visibilityFlags[i]);
 
         // Get total count for pagination
-        const totalSavedPosts = await SavedPost.countDocuments({ userId });
+        const totalSavedPosts = await SavedPost.countDocuments({ userId, ...collectionFilter });
 
         // Stitch like engagement on populated post objects
         const postDocs = savedPosts.map(s => s.postId).filter(Boolean);
@@ -221,10 +247,10 @@ const checkPostSaved = asyncHandler(async (req, res) => {
             throw new ApiError(404, "Post not found");
         }
 
-        const isSaved = await SavedPost.exists({ userId, postId });
+        const saved = await SavedPost.findOne({ userId, postId }).select('collectionIds').lean();
 
         return res.status(200).json(
-            new ApiResponse(200, { isSaved: !!isSaved }, "Post saved status retrieved")
+            new ApiResponse(200, { isSaved: !!saved, collectionIds: saved?.collectionIds || [] }, "Post saved status retrieved")
         );
     } catch (error) {
         if (error.name === 'CastError') {

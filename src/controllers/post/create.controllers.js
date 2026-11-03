@@ -14,6 +14,8 @@ import {
     uploadPostMedia,
     invalidatePostCaches,
 } from "./helpers.js";
+import { buildPostExtras } from "./extras.js";
+import { mediaFromDraft } from "../draft.controllers.js";
 
 export const createNormalPost = asyncHandler(async (req, res) => {
     const userId = req.user?._id;
@@ -31,10 +33,13 @@ export const createNormalPost = asyncHandler(async (req, res) => {
     const resolvedLocation = await resolveLocationCoordinates(parsedLocation);
 
     const files = extractMediaFiles(req.files);
-    if (!files.length) throw new ApiError(400, "Media file is required");
+    // Publishing a draft (#70) reuses the media it already uploaded.
+    const draftMedia = files.length ? null : await mediaFromDraft(req.body.draftId, userId, req.files?.thumbnail?.[0]);
+    if (!files.length && !draftMedia?.length) throw new ApiError(400, "Media file is required");
 
-    const uploadedMedia = await uploadPostMedia(files, req.files?.thumbnail?.[0]);
+    const uploadedMedia = draftMedia || await uploadPostMedia(files, req.files?.thumbnail?.[0]);
 
+    const extras = await buildPostExtras(req.body, userId, { explicitMentions: parsedMentions, isVibe: ["reel", "video"].includes(typeof postType !== "undefined" ? postType : "") });
     const post = await Post.create({
         userId,
         postType,
@@ -43,8 +48,8 @@ export const createNormalPost = asyncHandler(async (req, res) => {
         description,
         // Collected and required by the composer; previously dropped on arrival.
         category, customCategory,
-        mentions: parsedMentions || [],
-        media: uploadedMedia,
+        ...extras.fields,
+        media: extras.decorateMedia(uploadedMedia),
         customization: {
             normal: { mood, activity, location: resolvedLocation, tags: parsedTags || [] },
         },
@@ -66,6 +71,7 @@ export const createNormalPost = asyncHandler(async (req, res) => {
     //* cleared them on create, so a new post simply did not appear until
     //* the TTL lapsed — which is why it only showed up via the profile.
     await invalidatePostCaches(post._id, req.user._id);
+    extras.after(post).catch(() => {});
 
     return res.status(201).json(new ApiResponse(201, post, "Normal post created successfully"));
 });
@@ -87,8 +93,11 @@ export const createTweetPost = asyncHandler(async (req, res) => {
 
     // Media is optional for tweets
     const files = extractMediaFiles(req.files);
-    const uploadedMedia = files.length ? await uploadPostMedia(files, req.files?.thumbnail?.[0]) : [];
+    const uploadedMedia = files.length
+        ? await uploadPostMedia(files, req.files?.thumbnail?.[0])
+        : ((await mediaFromDraft(req.body.draftId, userId)) || []);
 
+    const extras = await buildPostExtras(req.body, userId, { explicitMentions: parsedMentions, isVibe: ["reel", "video"].includes(typeof postType !== "undefined" ? postType : "") });
     const post = await Post.create({
         userId,
         postType: "tweet",
@@ -97,8 +106,8 @@ export const createTweetPost = asyncHandler(async (req, res) => {
         description,
         // Collected and required by the composer; previously dropped on arrival.
         category, customCategory,
-        mentions: parsedMentions || [],
-        media: uploadedMedia,
+        ...extras.fields,
+        media: extras.decorateMedia(uploadedMedia),
         customization: {
             normal: { location: resolvedLocation, tags: parsedTags || [] },
         },
@@ -120,6 +129,7 @@ export const createTweetPost = asyncHandler(async (req, res) => {
     //* cleared them on create, so a new post simply did not appear until
     //* the TTL lapsed — which is why it only showed up via the profile.
     await invalidatePostCaches(post._id, req.user._id);
+    extras.after(post).catch(() => {});
 
     return res.status(201).json(new ApiResponse(201, post, "Tweet post created successfully"));
 });
@@ -153,16 +163,19 @@ export const createProductPost = asyncHandler(async (req, res) => {
     const resolvedLocation = await resolveLocationCoordinates(parsedLocation);
 
     const files = extractMediaFiles(req.files);
-    if (!files.length) throw new ApiError(400, "Media file is required");
+    // Publishing a draft (#70) reuses the media it already uploaded.
+    const draftMedia = files.length ? null : await mediaFromDraft(req.body.draftId, userId, req.files?.thumbnail?.[0]);
+    if (!files.length && !draftMedia?.length) throw new ApiError(400, "Media file is required");
 
-    const uploadedMedia = await uploadPostMedia(files, req.files?.thumbnail?.[0]);
+    const uploadedMedia = draftMedia || await uploadPostMedia(files, req.files?.thumbnail?.[0]);
 
+    const extras = await buildPostExtras(req.body, userId, { explicitMentions: parsedMentions, isVibe: ["reel", "video"].includes(typeof postType !== "undefined" ? postType : "") });
     const post = await Post.create({
         userId, postType, contentType: "product", caption, description,
         // Collected and required by the composer; previously dropped on arrival.
         category, customCategory,
-        mentions: parsedMentions || [],
-        media: uploadedMedia,
+        ...extras.fields,
+        media: extras.decorateMedia(uploadedMedia),
         customization: {
             product: validatedProduct,
             normal: { mood, activity, location: resolvedLocation, tags: parsedTags || [] },
@@ -188,6 +201,7 @@ export const createProductPost = asyncHandler(async (req, res) => {
     //* cleared them on create, so a new post simply did not appear until
     //* the TTL lapsed — which is why it only showed up via the profile.
     await invalidatePostCaches(post._id, req.user._id);
+    extras.after(post).catch(() => {});
 
     return res.status(201).json(new ApiResponse(201, post, "Product post created successfully"));
 });
@@ -211,16 +225,19 @@ export const createServicePost = asyncHandler(async (req, res) => {
     const resolvedLocation = await resolveLocationCoordinates(parsedLocation);
 
     const files = extractMediaFiles(req.files);
-    if (!files.length) throw new ApiError(400, "Media file is required");
+    // Publishing a draft (#70) reuses the media it already uploaded.
+    const draftMedia = files.length ? null : await mediaFromDraft(req.body.draftId, userId, req.files?.thumbnail?.[0]);
+    if (!files.length && !draftMedia?.length) throw new ApiError(400, "Media file is required");
 
-    const uploadedMedia = await uploadPostMedia(files, req.files?.thumbnail?.[0]);
+    const uploadedMedia = draftMedia || await uploadPostMedia(files, req.files?.thumbnail?.[0]);
 
+    const extras = await buildPostExtras(req.body, userId, { explicitMentions: parsedMentions, isVibe: ["reel", "video"].includes(typeof postType !== "undefined" ? postType : "") });
     const post = await Post.create({
         userId, postType, contentType: "service", caption, description,
         // Collected and required by the composer; previously dropped on arrival.
         category, customCategory,
-        mentions: parsedMentions || [],
-        media: uploadedMedia,
+        ...extras.fields,
+        media: extras.decorateMedia(uploadedMedia),
         customization: {
             service: validatedService,
             normal: { mood, activity, location: resolvedLocation, tags: parsedTags || [] },
@@ -246,6 +263,7 @@ export const createServicePost = asyncHandler(async (req, res) => {
     //* cleared them on create, so a new post simply did not appear until
     //* the TTL lapsed — which is why it only showed up via the profile.
     await invalidatePostCaches(post._id, req.user._id);
+    extras.after(post).catch(() => {});
 
     return res.status(201).json(new ApiResponse(201, post, "Service post created successfully"));
 });
@@ -271,16 +289,19 @@ export const createBusinessPost = asyncHandler(async (req, res) => {
     const resolvedLocation = await resolveLocationCoordinates(parsedLocation);
 
     const files = extractMediaFiles(req.files);
-    if (!files.length) throw new ApiError(400, "Media file is required");
+    // Publishing a draft (#70) reuses the media it already uploaded.
+    const draftMedia = files.length ? null : await mediaFromDraft(req.body.draftId, userId, req.files?.thumbnail?.[0]);
+    if (!files.length && !draftMedia?.length) throw new ApiError(400, "Media file is required");
 
-    const uploadedMedia = await uploadPostMedia(files, req.files?.thumbnail?.[0]);
+    const uploadedMedia = draftMedia || await uploadPostMedia(files, req.files?.thumbnail?.[0]);
 
+    const extras = await buildPostExtras(req.body, userId, { explicitMentions: parsedMentions, isVibe: ["reel", "video"].includes(typeof postType !== "undefined" ? postType : "") });
     const post = await Post.create({
         userId, postType, contentType: "business", caption, description,
         // Collected and required by the composer; previously dropped on arrival.
         category, customCategory,
-        mentions: parsedMentions || [],
-        media: uploadedMedia,
+        ...extras.fields,
+        media: extras.decorateMedia(uploadedMedia),
         customization: {
             business: validatedBusiness,
             normal: { mood, activity, location: resolvedLocation, tags: parsedTags || [] },
@@ -306,6 +327,7 @@ export const createBusinessPost = asyncHandler(async (req, res) => {
     //* cleared them on create, so a new post simply did not appear until
     //* the TTL lapsed — which is why it only showed up via the profile.
     await invalidatePostCaches(post._id, req.user._id);
+    extras.after(post).catch(() => {});
 
     return res.status(201).json(new ApiResponse(201, post, "Business post created successfully"));
 });
@@ -346,6 +368,7 @@ export const createBatchPosts = asyncHandler(async (req, res) => {
         }
 
         const parsedMentions = parseField(p.mentions);
+        const extras = await buildPostExtras(p, userId, { explicitMentions: parsedMentions, isVibe: ["reel", "video"].includes(postType) });
         const parsedTags = parseField(p.tags);
         const parsedSettings = parseField(p.settings);
         const parsedLocation = parseField(p.location);
@@ -384,7 +407,7 @@ export const createBatchPosts = asyncHandler(async (req, res) => {
             caption: p.caption, description: p.description,
             mood: p.mood, activity: p.activity,
             parsedMentions, parsedTags, parsedSettings, parsedLocation,
-            validatedDetails, files, thumbnail,
+            validatedDetails, files, thumbnail, extras,
             scheduledAt: p.scheduledAt, publishedAt: p.publishedAt, status: p.status,
         });
     }
@@ -454,8 +477,8 @@ export const createBatchPosts = asyncHandler(async (req, res) => {
                 contentType: p.contentType,
                 caption: p.caption,
                 description: p.description,
-                mentions: p.parsedMentions || [],
-                media: uploadedMedia,
+                ...p.extras.fields,
+                media: p.extras.decorateMedia(uploadedMedia),
                 customization,
                 settings: postSettings,
                 scheduledAt: p.scheduledAt,
@@ -480,6 +503,7 @@ export const createBatchPosts = asyncHandler(async (req, res) => {
         //* keep serving the pre-post list for up to 5 minutes, so a multi-post
         //* upload appears to have done nothing.
         await invalidatePostCaches(createdPosts[0]?._id, userId);
+        createdPosts.forEach((created, i) => parsedPosts[i]?.extras?.after(created).catch(() => {}));
 
         return res.status(201).json(
             new ApiResponse(201, { posts: createdPosts, count: createdPosts.length }, `${createdPosts.length} posts created successfully`)

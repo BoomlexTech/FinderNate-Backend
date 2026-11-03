@@ -1,3 +1,4 @@
+import { getFeedSignals, rankTimeExpression, excludedObjectIds } from '../utils/feedSignals.utils.js';
 import { asyncHandler } from "../utils/asyncHandler.js";
 import Post from "../models/userPost.models.js";
 import { User } from "../models/user.models.js";
@@ -198,6 +199,13 @@ export const getSuggestedReels = asyncHandler(async (req, res) => {
             ];
         }
 
+        // Not interested / hidden vibes are left out, and the newest-first order
+        // takes the viewer's preferences into account (Phase 2 #26, #68).
+        const feedSignals = currentUserId ? await getFeedSignals(currentUserId) : null;
+        const excludedPostIds = excludedObjectIds(feedSignals);
+        if (excludedPostIds.length) matchCriteria._id = { $nin: excludedPostIds };
+        const rankTime = (!sortBy || sortBy === 'latest') ? rankTimeExpression(feedSignals) : null;
+
         // Build sort criteria
         let sortCriteria = {};
         switch (sortBy) {
@@ -260,8 +268,10 @@ export const getSuggestedReels = asyncHandler(async (req, res) => {
             // Match criteria
             { $match: matchCriteria },
 
+            ...(rankTime ? [{ $addFields: { rankTime } }] : []),
+
             // Sort by specified criteria
-            { $sort: sortCriteria },
+            { $sort: rankTime ? { rankTime: -1, ...sortCriteria } : sortCriteria },
 
             // Add pagination
             { $skip: skip },
@@ -547,3 +557,12 @@ export const getSuggestedReels = asyncHandler(async (req, res) => {
         );
     }
 });
+/**
+ * Drop the in-memory vibes page cache. Called when a viewer marks a vibe "Not
+ * interested" so the next swipe-load can't serve it again (Phase 2 #68).
+ */
+export const resetReelsCache = () => {
+    cache.reels.data = null;
+    cache.reels.timestamp = null;
+    cache.reels.cacheKey = null;
+};

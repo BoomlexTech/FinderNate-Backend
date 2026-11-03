@@ -14,6 +14,7 @@ import PaymentLink from "../../models/paymentLink.models.js";
 import { deleteMultipleFromBunny, deleteFromBunny } from "../../utils/bunny.js";
 import { invalidatePostCaches } from "./helpers.js";
 import { cancelBoostsForPost } from "../../utils/boostServing.js";
+import { moveToBin } from "../../utils/bin.utils.js";
 
 /**
  * A post whose money is still in flight cannot be deleted.
@@ -247,6 +248,7 @@ export const deleteContent = asyncHandler(async (req, res) => {
     let contentType = null;
     let mediaUrls = [];
     let bunnyDeletionResult = { totalDeleted: 0, totalSkipped: 0, errors: [] };
+    let binned = null;
 
     try {
         // 1. Try Post collection first
@@ -273,39 +275,13 @@ export const deleteContent = asyncHandler(async (req, res) => {
                 });
             }
 
-            // Database row FIRST, then the media.
-            //
-            // The order used to be the other way round, and it is only
-            // recoverable in one direction. Deleting Bunny first and then
-            // failing on the database leaves a live post pointing at files that
-            // no longer exist — broken images in everyone's feed, permanently.
-            // Doing the row first and failing on Bunny leaves orphaned files:
-            // invisible, costing a little storage, and cleanable later.
-            await Post.findByIdAndDelete(postId);
-            await Post.db.model('User').findByIdAndUpdate(userId, { $pull: { posts: postId } });
-
-            if (mediaUrls.length > 0) {
-                try {
-                    bunnyDeletionResult = await deleteMultipleFromBunny(mediaUrls);
-                } catch (error) {
-                    console.error("Bunny.net deletion error:", error);
-                    bunnyDeletionResult.errors.push({ error: `Bunny.net deletion failed: ${error.message}` });
-                }
-            }
-
-            // Everything that points AT the post. PostInteraction, Report,
-            // PaymentLink and Order were left dangling — rows referencing an id
-            // that no longer resolves, which then render as blank cards and
-            // skew the counts built from them.
-            await Promise.allSettled([
-                Like.deleteMany({ postId: postId }),
-                Comment.deleteMany({ postId: postId }),
-                SavedPost.deleteMany({ postId: postId }),
-                PostInteraction.deleteMany({ postId: postId }),
-                Report.deleteMany({ reportedPostId: postId }),
-                cancelPaymentLinksForPost(postId),
-                cancelBoostsForPost(postId),
-            ]);
+            // Into the Bin (Phase 2 #15), not erased: the post leaves every
+            // feed, profile and search now, and keeps its media, likes,
+            // comments and saves for 15 days so it can be restored. The purge
+            // job (jobs/binPurge.job.js) does what this used to do at once.
+            const binItem = await moveToBin('post', content, userId);
+            binned = { binId: binItem._id, purgeAfter: binItem.purgeAfter };
+            mediaUrls = [];
 
             await invalidatePostCaches(postId, userId);
         }
@@ -320,21 +296,8 @@ export const deleteContent = asyncHandler(async (req, res) => {
                     throw new ApiError(403, "You can only delete your own stories");
                 }
 
-                if (content.mediaUrl) {
-                    mediaUrls.push(content.mediaUrl);
-                }
-
-                if (mediaUrls.length > 0) {
-                    try {
-                        const result = await deleteFromBunny(content.mediaUrl);
-                        bunnyDeletionResult.totalDeleted = 1;
-                    } catch (error) {
-                        console.error("Bunny.net deletion error:", error);
-                        bunnyDeletionResult.errors.push({ error: `Bunny.net deletion failed: ${error.message}` });
-                    }
-                }
-
-                await Story.findByIdAndDelete(postId);
+                const binItem = await moveToBin('story', content, userId);
+                binned = { binId: binItem._id, purgeAfter: binItem.purgeAfter };
                 await invalidatePostCaches(postId, userId);
             }
         }
@@ -381,6 +344,8 @@ export const deleteContent = asyncHandler(async (req, res) => {
         const responseData = {
             postId,
             contentType,
+            // Set when the item went to the Bin rather than being erased.
+            ...(binned ? { inBin: true, binId: binned.binId, purgeAfter: binned.purgeAfter } : {}),
             mediaCleanup: {
                 filesDeleted: bunnyDeletionResult.totalDeleted,
                 filesSkipped: bunnyDeletionResult.totalSkipped || 0,
@@ -393,7 +358,9 @@ export const deleteContent = asyncHandler(async (req, res) => {
             new ApiResponse(
                 200,
                 responseData,
-                bunnyDeletionResult.errors.length > 0
+                binned
+                    ? `Moved to your Bin. You can restore it for ${Math.max(1, Math.round((new Date(binned.purgeAfter) - Date.now()) / 86400000))} days.`
+                    : bunnyDeletionResult.errors.length > 0
                     ? `${contentType.charAt(0).toUpperCase() + contentType.slice(1)} deleted successfully, but some media files could not be removed from cloud storage`
                     : `${contentType.charAt(0).toUpperCase() + contentType.slice(1)} and all associated media deleted successfully`
             )

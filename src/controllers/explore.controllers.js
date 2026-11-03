@@ -1,3 +1,4 @@
+import { annotateSeen } from '../utils/seenFlags.utils.js';
 import Post from "../models/userPost.models.js";
 import Story from "../models/story.models.js";
 import { User } from "../models/user.models.js";
@@ -388,6 +389,9 @@ export const getExploreFeed = asyncHandler(async (req, res) => {
             };
         });
     }
+
+    // Seen / fresh flags (#33), per viewer.
+    await annotateSeen(feed, req.user?._id || null);
 
     res.status(200).json(new ApiResponse(200, {
         feed,

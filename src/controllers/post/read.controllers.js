@@ -1,3 +1,5 @@
+import { authorOrCollabFilter, attachCollaborators } from '../../utils/collab.utils.js';
+import { annotateSeen } from '../../utils/seenFlags.utils.js';
 import mongoose from 'mongoose';
 import { asyncHandler } from "../../utils/asyncHandler.js";
 import { ApiError } from "../../utils/ApiError.js";
@@ -18,6 +20,7 @@ import { checkContentVisibility, getViewableUserIds } from "../../middlewares/pr
 // references, shared URLs. A deleted post answers with an explicit tombstone
 // instead of a 404 the clients render as a blank screen.
 import { sendDeletedTombstone } from "../../utils/contentTombstone.utils.js";
+import { publicUserPopulate } from "../../utils/profilePrivacy.utils.js";
 
 /**
  * Post contentTypes a Free business account cannot promote: they are kept out of
@@ -228,6 +231,10 @@ export const getPostById = asyncHandler(async (req, res) => {
         post.likedByPreview = preview.likedByText ? { text: preview.likedByText, previewUser: preview.previewUser, othersCount: preview.othersCount } : null;
     }
 
+    // Collab co-authors and seen flags (#50, #33).
+    await attachCollaborators([post], currentUser?._id || null);
+    await annotateSeen([post], currentUser?._id || null);
+
     const [postWithBadge] = await addBadgesToNestedUsers([post]);
 
     return res.status(200).json(new ApiResponse(200, { ...postWithBadge, isFollowing }, "Post fetched successfully"));
@@ -243,12 +250,13 @@ export const getMyPosts = asyncHandler(async (req, res) => {
     page = parseInt(page) > 0 ? parseInt(page) : 1;
     limit = parseInt(limit) > 0 ? parseInt(limit) : 10;
 
-    const filter = { userId };
+    // Own posts plus accepted collabs (#50).
+    const filter = { ...authorOrCollabFilter(userId) };
     if (postType) filter.postType = postType;
     if (contentType) filter.contentType = contentType;
 
     const posts = await Post.find(filter)
-        .populate('userId', 'username profileImageUrl fullName isVerified location bio')
+        .populate(publicUserPopulate('userId', 'username profileImageUrl fullName isVerified location bio'))
         .sort({ createdAt: -1 })
         .skip((page - 1) * limit)
         .limit(limit);
@@ -273,6 +281,7 @@ export const getMyPosts = asyncHandler(async (req, res) => {
         return postObj;
     });
 
+    await attachCollaborators(postsWithThumbnails, req.user?._id || null);
     const currentUserId = req.user?._id?.toString();
     const [likedSet, likeCountMap, likedByUsersMap] = await Promise.all([
         currentUserId ? batchIsLikedByUser(req.user._id, postsWithThumbnails.map(p => p._id)) : Promise.resolve(new Set()),
@@ -394,7 +403,8 @@ export const getUserProfilePosts = asyncHandler(async (req, res) => {
     const sortObj = { [sortBy]: sortDirection };
 
     const filter = {
-        userId,
+        // Own posts plus accepted collabs (#50).
+        ...authorOrCollabFilter(userId),
         status: { $in: ['published', 'scheduled'] }
     };
 
@@ -425,7 +435,7 @@ export const getUserProfilePosts = asyncHandler(async (req, res) => {
 
     try {
         const posts = await Post.find(filter)
-            .populate('userId', 'username profileImageUrl fullName isVerified location bio privacy isFullPrivate')
+            .populate(publicUserPopulate('userId', 'username profileImageUrl fullName isVerified location bio privacy isFullPrivate'))
             .populate('mentions', 'username fullName profileImageUrl')
             .sort(sortObj)
             .skip(skip)
@@ -516,6 +526,7 @@ export const getUserProfilePosts = asyncHandler(async (req, res) => {
             });
         }
 
+        await attachCollaborators(postsAfterBusinessFilter, currentUserId);
         const enrichedPosts = await enrichWithRatings(postsAfterBusinessFilter, 'userId');
         const postsWithBadges = await addBadgesToNestedUsers(enrichedPosts);
 

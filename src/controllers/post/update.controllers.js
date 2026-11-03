@@ -5,6 +5,10 @@ import Post, { deriveHashtags } from "../../models/userPost.models.js";
 import { getCoordinates } from "../../utils/getCoordinates.js";
 import { FeedCacheManager } from "../../utils/cache.utils.js";
 import { redisClient } from "../../config/redis.config.js";
+import mongoose from "mongoose";
+import { interactionSettingsOf } from "./visibility.js";
+import { resolveMentions, notifyMentions } from "../../utils/mentions.utils.js";
+import { normalizeSubcategories } from "../../utils/postExtras.utils.js";
 
 export const editPost = asyncHandler(async (req, res) => {
     const { postId } = req.params;
@@ -57,7 +61,23 @@ export const editPost = asyncHandler(async (req, res) => {
 
     if (caption !== undefined) updateData.caption = caption;
     if (description !== undefined) updateData.description = description;
-    if (parsedMentions) updateData.mentions = parsedMentions;
+
+    // Mentions follow the text (#64): recomputed whenever the caption or
+    // description changes, with the same privacy rules as on create. Only the
+    // accounts that weren't mentioned before are notified.
+    const previousMentionIds = (post.mentions || []).map(String);
+    let newMentionIds = null;
+    if (caption !== undefined || description !== undefined || parsedMentions) {
+        newMentionIds = await resolveMentions({
+            texts: [caption !== undefined ? caption : post.caption, description !== undefined ? description : post.description],
+            explicitIds: parsedMentions || [],
+            authorId: userId,
+        });
+        updateData.mentions = newMentionIds;
+    }
+
+    const subcategories = normalizeSubcategories(req.body.subcategories);
+    if (subcategories !== undefined) updateData.subcategories = subcategories;
 
     const customization = post.customization?.toObject?.() || { ...post.customization } || {};
 
@@ -166,6 +186,10 @@ export const editPost = asyncHandler(async (req, res) => {
         await FeedCacheManager.invalidateTrendingFeed();
     }
 
+    if (newMentionIds) {
+        notifyMentions({ mentionIds: newMentionIds, previousIds: previousMentionIds, authorId: userId, postId }).catch(() => {});
+    }
+
     return res.status(200).json(new ApiResponse(200, updatedPost, "Post updated successfully"));
 });
 
@@ -222,6 +246,59 @@ export const togglePostPrivacy = asyncHandler(async (req, res) => {
     }, `Post privacy updated to ${privacy}`));
 });
 
+/**
+ * PATCH /posts/:postId/interaction-settings   (Phase 2 #18)
+ *
+ * Lets the author switch likes, comments and sharing on or off for one post or
+ * vibe. Body: any of { allowLikes, allowComments, allowShares } as booleans;
+ * fields left out are unchanged. The switches are enforced by likePost,
+ * createComment and the share endpoints, not just hidden in the UI.
+ */
+export const updatePostInteractionSettings = asyncHandler(async (req, res) => {
+    const { postId } = req.params;
+    const userId = req.user?._id;
+
+    if (!userId) throw new ApiError(401, "User authentication required");
+    if (!mongoose.isValidObjectId(postId)) throw new ApiError(404, "Post not found");
+
+    const update = {};
+    for (const key of ['allowLikes', 'allowComments', 'allowShares']) {
+        const value = req.body?.[key];
+        if (value === undefined) continue;
+        if (typeof value !== 'boolean') throw new ApiError(400, `${key} must be true or false`);
+        update[`settings.${key}`] = value;
+    }
+    if (Object.keys(update).length === 0) {
+        throw new ApiError(400, "Send at least one of allowLikes, allowComments or allowShares");
+    }
+
+    const post = await Post.findById(postId).select('userId').lean();
+    if (!post) throw new ApiError(404, "Post not found");
+    if (post.userId.toString() !== userId.toString()) {
+        throw new ApiError(403, "You can only change your own posts");
+    }
+
+    const updated = await Post.findByIdAndUpdate(
+        postId,
+        { $set: { ...update, updatedAt: new Date() } },
+        { new: true }
+    ).select('settings').lean();
+
+    await FeedCacheManager.invalidateUserFeed(userId);
+    if ('settings.allowShares' in update) {
+        // The public share pages cache the post, including whether it may be shared.
+        await Promise.allSettled([
+            redisClient.del(`fn:share:post:${postId}`),
+            redisClient.del(`fn:share:reel:${postId}`),
+        ]);
+    }
+
+    return res.status(200).json(new ApiResponse(200, {
+        postId,
+        ...interactionSettingsOf(updated),
+    }, "Post settings updated"));
+});
+
 /*
  * REMOVED — updatePost.
  *
@@ -263,4 +340,35 @@ export const schedulePost = asyncHandler(async (req, res) => {
     }, { new: true });
 
     return res.status(200).json(new ApiResponse(200, post, "Post scheduled successfully"));
+});
+
+/**
+ * PATCH /posts/:postId/cover (multipart "thumbnail") — choose a vibe's cover
+ * after posting (Phase 2 #71). The clients pick a frame from the video or an
+ * image; either arrives as an image file. On create, the same "thumbnail"
+ * field already sets the cover.
+ */
+export const updatePostCover = asyncHandler(async (req, res) => {
+    const { postId } = req.params;
+    const userId = req.user?._id;
+    const file = req.files?.thumbnail?.[0] || req.file;
+    if (!file?.buffer) throw new ApiError(400, "Attach the cover image");
+    if (!file.mimetype?.startsWith("image/")) throw new ApiError(400, "The cover must be an image");
+    if (file.size > 10 * 1024 * 1024) throw new ApiError(400, "The cover image can be up to 10 MB");
+    if (!mongoose.Types.ObjectId.isValid(postId)) throw new ApiError(404, "Post not found");
+
+    const post = await Post.findById(postId).select("userId media").lean();
+    if (!post) throw new ApiError(404, "Post not found");
+    if (post.userId.toString() !== userId.toString()) throw new ApiError(403, "You can only change your own post's cover");
+    const index = (post.media || []).findIndex((m) => m.type === "video");
+    if (index < 0) throw new ApiError(400, "Only a video or vibe has a cover");
+
+    const { uploadBufferToBunny, generateOptimizedImageUrl } = await import("../../utils/bunny.js");
+    const result = await uploadBufferToBunny(file.buffer, "posts");
+    const coverUrl = generateOptimizedImageUrl(result.secure_url, { width: 300, height: 300, crop: 'fill' });
+
+    await Post.updateOne({ _id: postId }, { $set: { [`media.${index}.thumbnailUrl`]: coverUrl, updatedAt: new Date() } });
+    const { invalidatePostCaches } = await import("./helpers.js");
+    await invalidatePostCaches(postId, userId);
+    return res.status(200).json(new ApiResponse(200, { postId, thumbnailUrl: coverUrl }, "Cover updated"));
 });

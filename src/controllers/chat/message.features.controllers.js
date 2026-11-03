@@ -247,6 +247,11 @@ export const forwardMessage = asyncHandler(async (req, res) => {
             fileName: originalMessage.fileName,
             fileSize: originalMessage.fileSize,
             duration: originalMessage.duration,
+            // A shared post keeps its snapshot so the forwarded bubble still
+            // renders (#24); the post itself is re-checked when it is opened.
+            ...(originalMessage.messageType === 'shared_post' && originalMessage.sharedPost
+                ? { sharedPost: originalMessage.sharedPost }
+                : {}),
             timestamp: new Date(),
             readBy: [currentUserId],
             deliveryStatus: recipients.map(recipientId => ({

@@ -37,6 +37,8 @@ const CommentSchema = new mongoose.Schema({
         type: mongoose.Schema.Types.ObjectId,
         ref: 'User'
     }],
+    // Phase 2 #64: accounts @mentioned in the text that allow being mentioned.
+    mentions: { type: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }], default: undefined },
     isEdited: {
         type: Boolean,
         default: false

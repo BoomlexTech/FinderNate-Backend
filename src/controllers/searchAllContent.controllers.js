@@ -17,6 +17,7 @@ import {
     getLiveBoosts,
     isCorporateBusinessPlan
 } from '../utils/boostServing.js';
+import { publicUserPopulate, scrubHiddenLocations, visibleLocationClauses } from "../utils/profilePrivacy.utils.js";
 
 export const searchAllContent = async (req, res) => {
     try {
@@ -248,8 +249,8 @@ export const searchAllContent = async (req, res) => {
                 { fullName: searchRegex },
                 { fullNameLower: searchRegex },
                 { bio: searchRegex },
-                { location: searchRegex },
-                { address: searchRegex }
+                // A hidden location/address must not be searchable (#12).
+                ...visibleLocationClauses(searchRegex)
             ],
             _id: { $nin: blockedUsers }
         }).select('_id');
@@ -302,7 +303,7 @@ export const searchAllContent = async (req, res) => {
         let rawPosts = await Post.find(
             buildPostQuery(isHashtagQuery ? hashtagOrClauses : keywordOrClauses, { widenByAuthor: !isHashtagQuery })
         )
-            .populate('userId', 'username profileImageUrl bio location isBusinessProfile')
+            .populate(publicUserPopulate('userId', 'username profileImageUrl bio location isBusinessProfile'))
             .lean();
 
         //* Nothing carries that tag EXACTLY. Rather than dead-ending on an empty
@@ -316,7 +317,7 @@ export const searchAllContent = async (req, res) => {
             rawPosts = await Post.find(
                 buildPostQuery(keywordOrClauses, { widenByAuthor: false })
             )
-                .populate('userId', 'username profileImageUrl bio location isBusinessProfile')
+                .populate(publicUserPopulate('userId', 'username profileImageUrl bio location isBusinessProfile'))
                 .lean();
         }
 
@@ -517,7 +518,7 @@ export const searchAllContent = async (req, res) => {
             }
 
             const rawReels = await Reel.find(reelFilters)
-                .populate('userId', 'username profileImageUrl bio location isBusinessProfile')
+                .populate(publicUserPopulate('userId', 'username profileImageUrl bio location isBusinessProfile'))
                 .lean();
 
             // Filter out unpaid business reels
@@ -582,15 +583,15 @@ export const searchAllContent = async (req, res) => {
                 { fullName: searchRegex },
                 { fullNameLower: searchRegex },
                 { bio: searchRegex },
-                { location: searchRegex },
-                { address: searchRegex },
+                ...visibleLocationClauses(searchRegex),
                 { email: searchRegex }
             ],
             _id: { $nin: blockedUsers }
         })
             .limit(limit)
-            .select('username fullName profileImageUrl bio location isBusinessProfile')
-            .lean();
+            .select('username fullName profileImageUrl bio location isAddressHidden isBusinessProfile')
+            .lean()
+            .transform(scrubHiddenLocations);
 
         // Also find users through business category and subcategory search
         const businessUsersByCategory = await Business.find({
@@ -603,7 +604,7 @@ export const searchAllContent = async (req, res) => {
             ],
             userId: { $nin: blockedUsers }
         })
-            .populate('userId', 'username fullName profileImageUrl bio location isBusinessProfile')
+            .populate(publicUserPopulate('userId', 'username fullName profileImageUrl bio location isBusinessProfile'))
             .limit(limit)
             .lean();
 

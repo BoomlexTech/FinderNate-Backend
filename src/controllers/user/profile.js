@@ -1,3 +1,4 @@
+import { recordProfileVisit } from '../profileVisitors.controllers.js';
 import { asyncHandler } from "../../utils/asyncHandler.js";
 import { User } from "../../models/user.models.js";
 import { ApiError } from "../../utils/ApiError.js";
@@ -368,6 +369,10 @@ const getOtherUserProfile = asyncHandler(async (req, res) => {
 
     const isFollowing = await getFollowStatus(req.user._id, targetUser._id);
 
+    // Profile visitors (Phase 2 #65): skipped for your own profile and for
+    // visitors who hide their visits. Detached so it never slows the profile.
+    recordProfileVisit(req.user._id, targetUser._id).catch(() => {});
+
     const pendingRequest = await FollowRequest.findOne({
         requesterId: req.user._id,
         recipientId: targetUser._id,
@@ -400,7 +405,9 @@ const getOtherUserProfile = asyncHandler(async (req, res) => {
         fullName: targetUser.fullName,
         phoneNumber: targetUser.isPhoneNumberHidden ? null : (targetUser.phoneNumber || ""),
         address: targetUser.isAddressHidden ? null : (targetUser.address || ""),
-        dateOfBirth: targetUser.dateOfBirth || "",
+        // dateOfBirth is deliberately NOT sent: it is personal data that only
+        // the owner sees (GET /users/profile). Both clients already treat a
+        // missing value as empty, and neither shows it on someone else's profile.
         gender: targetUser.gender || "",
         isBusinessProfile: targetUser.isBusinessProfile,
         businessId: businessId,
@@ -413,7 +420,8 @@ const getOtherUserProfile = asyncHandler(async (req, res) => {
         subscriptionBadge: subscriptionBadge,
         bio: targetUser.bio || "",
         link: targetUser.link || "",
-        location: targetUser.location || "",
+        // "Hide address" hides the free-text location as well (#12).
+        location: targetUser.isAddressHidden ? null : (targetUser.location || ""),
         profileImageUrl: targetUser.profileImageUrl || "",
         followersCount,
         followingCount,
@@ -512,6 +520,7 @@ const deleteAccount = asyncHandler(async (req, res) => {
                     participants: userId,
                     admins: userId,
                     mutedBy: userId,
+                    mutes: { userId },
                     blockedUsers: userId
                 }
             }

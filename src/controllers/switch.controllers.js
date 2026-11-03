@@ -1,3 +1,4 @@
+import { authorOrCollabFilter, attachCollaborators } from '../utils/collab.utils.js';
 import { ApiError } from "../utils/ApiError.js";
 import { ApiResponse } from "../utils/ApiResponse.js";
 import Post from "../models/userPost.models.js";
@@ -16,7 +17,8 @@ const postProjection = {
     createdAt: 1,
     postType: 1,
     contentType: 1,
-    status: 1
+    status: 1,
+    collaborators: 1
 };
 const storyProjection = {
     _id: 1,
@@ -68,7 +70,8 @@ export const getProfileTabContent = asyncHandler(async (req, res) => {
     switch (tab) {
         case "photos": {
             const filter = {
-                userId,
+                // Own posts plus accepted collabs (#50).
+                ...authorOrCollabFilter(userId),
                 postType: { $in: ["photo", "video"] },
                 contentType: "normal",
                 status: { $in: ["published", "scheduled"] },
@@ -85,7 +88,8 @@ export const getProfileTabContent = asyncHandler(async (req, res) => {
         }
         case "reels": {
             const filter = {
-                userId,
+                // Own posts plus accepted collabs (#50).
+                ...authorOrCollabFilter(userId),
                 postType: "reel",
                 status: { $in: ["published", "scheduled"] },
                 ...privacyFilter
@@ -101,7 +105,8 @@ export const getProfileTabContent = asyncHandler(async (req, res) => {
         }
         case "videos": {
             const filter = {
-                userId,
+                // Own posts plus accepted collabs (#50).
+                ...authorOrCollabFilter(userId),
                 postType: "video",
                 contentType: { $ne: "normal" },
                 status: { $in: ["published", "scheduled"] },
@@ -168,6 +173,11 @@ export const getProfileTabContent = asyncHandler(async (req, res) => {
             total = await Story.countDocuments(filter);
             break;
         }
+    }
+
+    // Collab co-authors on the grid tiles (#50).
+    if (["photos", "reels", "videos"].includes(tab) && data.length > 0) {
+        await attachCollaborators(data, currentUserId);
     }
 
     // Add isLikedBy for posts (not stories)

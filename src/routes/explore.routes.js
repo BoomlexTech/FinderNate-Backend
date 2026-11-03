@@ -1,5 +1,6 @@
 import express from "express";
 import { getExploreFeed } from "../controllers/explore.controllers.js";
+import { getTrendingTopicsHandler, getHashtagPosts, getTrendingNearYou } from "../controllers/trending.controllers.js";
 import { optionalVerifyJWT } from "../middlewares/auth.middleware.js";
 import { getBlockedUsers as getBlockedUsersMiddleware } from "../middlewares/blocking.middleware.js";
 
@@ -15,5 +16,10 @@ const router = express.Router();
 // branch limiting anonymous callers to public accounts. Only the middleware
 // disagreed, and it turned a working guest path into a hard failure.
 router.route("/").get(optionalVerifyJWT, getBlockedUsersMiddleware, getExploreFeed);
+
+// Phase 2: trending topics (#58), a topic's posts, trending near you and hot deals (#42)
+router.get("/trending-topics", getTrendingTopicsHandler);
+router.get("/hashtag/:tag", optionalVerifyJWT, getBlockedUsersMiddleware, getHashtagPosts);
+router.get("/trending-near-you", optionalVerifyJWT, getBlockedUsersMiddleware, getTrendingNearYou);
 
 export default router;

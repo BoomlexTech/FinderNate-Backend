@@ -7,6 +7,25 @@ import Comment from "../models/comment.models.js";
 import Follower from "../models/follower.models.js";
 import mongoose from "mongoose";
 import { addBadgesToUsers } from "../utils/userBadge.utils.js";
+import { redisClient } from "../config/redis.config.js";
+
+/* ------------------------- dismissed suggestions (#5) ------------------------ */
+
+// "✕" on a suggestion card hides that account from the caller's suggestions
+// for 30 days (Phase 2 #5). Redis with a TTL rather than a field on User: the
+// list is per-viewer, short-lived and must never grow without bound.
+const DISMISS_TTL_SECONDS = 30 * 24 * 60 * 60;
+const dismissedKey = (userId) => `fn:suggest:dismissed:${userId}`;
+
+const getDismissedIds = async (userId) => {
+    try {
+        return await redisClient.smembers(dismissedKey(userId));
+    } catch (err) {
+        // A Redis hiccup must not empty the panel; show everything instead.
+        console.error("getDismissedIds failed:", err.message);
+        return [];
+    }
+};
 
 // Constants for scoring
 const LIKE_SCORE = 3;
@@ -62,7 +81,7 @@ const getPopularRanking = async () => {
  *
  * Same response shape as the personalised path, so the client needs no branch.
  */
-const sendPopularSuggestions = async (req, res) => {
+const sendPopularSuggestions = async (req, res, { excludeIds = [] } = {}) => {
     const page = Math.max(parseInt(req.query.page) || 1, 1);
     const limit = Math.min(parseInt(req.query.limit) || 10, 50);
     const skip = (page - 1) * limit;
@@ -80,7 +99,9 @@ const sendPopularSuggestions = async (req, res) => {
     // Same eligibility rules the personalised path applies at its own final
     // lookup — active, not a business profile, not blocked.
     const eligible = await User.find({
-        _id: { $in: rankedIds, $nin: blockedUsers },
+        // excludeIds: for a signed-in caller, themself, who they already follow
+        // and who they dismissed (#5).
+        _id: { $in: rankedIds, $nin: [...blockedUsers, ...excludeIds] },
         accountStatus: 'active',
         isBusinessProfile: { $ne: true },
     }).select('username fullName profileImageUrl bio isBusinessProfile');
@@ -269,6 +290,23 @@ const getSuggestedForYou = asyncHandler(async (req, res) => {
             }
         }
 
+        // Accounts the caller dismissed with "✕" stay out for 30 days (#5).
+        const dismissedIds = await getDismissedIds(currentUserId);
+        for (const id of dismissedIds) suggestionMap.delete(id);
+
+        // Nothing personal to suggest yet (a new account with no likes,
+        // comments or follows): fall back to popular accounts rather than an
+        // empty row, minus everyone they already follow or dismissed.
+        if (suggestionMap.size === 0) {
+            return sendPopularSuggestions(req, res, {
+                excludeIds: [
+                    new mongoose.Types.ObjectId(currentUserId),
+                    ...followingIds,
+                    ...dismissedIds.filter((id) => mongoose.isValidObjectId(id)).map((id) => new mongoose.Types.ObjectId(id)),
+                ],
+            });
+        }
+
         // Sort by score, then paginate, then shuffle the page batch
         let suggestions = Array.from(suggestionMap.values()).sort((a, b) => b.score - a.score);
         const paginated = suggestions.slice(skip, skip + limit);
@@ -343,6 +381,31 @@ const getSuggestedForYou = asyncHandler(async (req, res) => {
     }
 });
 
+/**
+ * POST /api/v1/suggestions/dismiss   body: { userId }
+ * Hides one account from the caller's "Suggested for you" for 30 days (#5).
+ */
+const dismissSuggestion = asyncHandler(async (req, res) => {
+    const currentUserId = req.user?._id;
+    const { userId } = req.body || {};
+    if (!currentUserId) throw new ApiError(401, "Sign in to manage suggestions");
+    if (!userId || !mongoose.isValidObjectId(userId)) throw new ApiError(400, "A valid userId is required");
+
+    try {
+        await redisClient
+            .multi()
+            .sadd(dismissedKey(currentUserId), String(userId))
+            .expire(dismissedKey(currentUserId), DISMISS_TTL_SECONDS)
+            .exec();
+    } catch (err) {
+        console.error("dismissSuggestion failed:", err.message);
+        throw new ApiError(503, "Could not save that right now, please try again");
+    }
+
+    return res.status(200).json(new ApiResponse(200, { userId, dismissed: true }, "Suggestion dismissed"));
+});
+
 export {
-    getSuggestedForYou
+    getSuggestedForYou,
+    dismissSuggestion
 };

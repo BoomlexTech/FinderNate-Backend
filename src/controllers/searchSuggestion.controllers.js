@@ -7,6 +7,7 @@ import { ApiResponse } from '../utils/ApiResponse.js';
 import { ApiError } from '../utils/ApiError.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 import { getBlockedUsersFilter } from '../middlewares/blocking.middleware.js';
+import { publicUserPopulate, scrubHiddenLocations } from "../utils/profilePrivacy.utils.js";
 
 /**
  * Enhanced search suggestions that always include user profiles with their posts, reels, and business information
@@ -84,7 +85,8 @@ export const getSearchSuggestions = asyncHandler(async (req, res) => {
             _id: { $nin: blockedUsers }
         })
             .limit(parseInt(limit))
-            .select('username fullName profileImageUrl bio location customization');
+            .select('username fullName profileImageUrl bio location isAddressHidden customization')
+            .transform(scrubHiddenLocations);
 
         // Also find users through business category and subcategory search
         const businessUsersByCategory = await Business.find({
@@ -97,7 +99,7 @@ export const getSearchSuggestions = asyncHandler(async (req, res) => {
             ],
             userId: { $nin: blockedUsers }
         })
-            .populate('userId', 'username fullName profileImageUrl bio location customization')
+            .populate(publicUserPopulate('userId', 'username fullName profileImageUrl bio location customization'))
             .limit(parseInt(limit))
             .lean();
 
@@ -158,14 +160,14 @@ export const getSearchSuggestions = asyncHandler(async (req, res) => {
             userId: { $in: limitedUsers.map(u => u._id) },
             ...publicPostFilter
         })
-            .populate('userId', 'username profileImageUrl bio location')
+            .populate(publicUserPopulate('userId', 'username profileImageUrl bio location'))
             .sort({ createdAt: -1 })
             .lean();
 
         const allUserReels = await Reel.find({
             userId: { $in: limitedUsers.map(u => u._id) }
         })
-            .populate('userId', 'username profileImageUrl bio location')
+            .populate(publicUserPopulate('userId', 'username profileImageUrl bio location'))
             .sort({ createdAt: -1 })
             .lean();
 

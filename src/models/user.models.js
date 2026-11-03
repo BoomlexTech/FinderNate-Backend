@@ -22,6 +22,25 @@ const UserSchema = new mongoose.Schema({
     isAddressHidden: { type: Boolean, default: false },
     privacy: { type: String, enum: ['private', 'public'], default: 'public' },
     isFullPrivate: { type: Boolean, default: false },
+    // Phase 2 #64: who may @mention this account. 'following' = only accounts
+    // this user follows.
+    mentionPrivacy: { type: String, enum: ['everyone', 'following', 'nobody'], default: 'everyone' },
+    // Phase 2 #14: while true, opening a post or vibe records nothing about
+    // this viewer: no history entry, no unique view, no "seen" flag.
+    historyPaused: { type: Boolean, default: false },
+    // Phase 2 #65: hide my visits from the people I look at. Reciprocal: an
+    // account that hides its visits can't see its own visitors either.
+    profileVisitsHidden: { type: Boolean, default: false },
+    // Phase 2 #26: content categories this user wants more of (max 10).
+    preferredCategories: { type: [String], default: undefined },
+    // Phase 2 #10: email per category. 'digest' = one daily summary; 'off' = none.
+    // Transactional mail (OTP, orders, plan and verification notices) is not
+    // controlled by this.
+    emailNotifications: {
+        activity: { type: String, enum: ['digest', 'off'], default: 'digest' },
+        messages: { type: String, enum: ['digest', 'off'], default: 'digest' }
+    },
+    emailDigestSentAt: { type: Date, default: null, select: false },
     // Messaging privacy settings
     messagingPrivacy: {
         onlineStatus: {
@@ -209,28 +228,23 @@ UserSchema.methods.generateRefreshToken = function () {
 };
 
 // 📞 Check if user has calling features access
+//
+// Must give the same answer as verifyCallingAccess (middlewares/
+// subscription.middleware.js), which is what actually gates POST /calls/initiate:
+// only an active PAID plan may start a call (Phase 2 #16). This method used to
+// let every business profile call for free, which contradicted the gate; it is
+// unused today and kept only so future callers get the correct rule.
+// Receiving a call needs no plan.
 UserSchema.methods.hasCallingAccess = async function () {
     const Subscription = mongoose.model('Subscription');
 
-    // Business profiles always have calling access
-    if (this.isBusinessProfile) {
-        return true;
-    }
-
-    // Check if user has an active paid subscription
     const subscription = await Subscription.findOne({
         userId: this._id,
         status: 'active',
         endDate: { $gt: new Date() }
-    });
+    }).select('plan').lean();
 
-    // Free users don't have calling access
-    if (!subscription || subscription.plan === 'free') {
-        return false;
-    }
-
-    // All paid plans (basic, pro, premium, business) have calling access
-    return true;
+    return !!subscription && ['small_business', 'corporate'].includes(subscription.plan);
 };
 
 // 📋 Get user subscription tier
