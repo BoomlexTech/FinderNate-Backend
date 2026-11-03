@@ -400,7 +400,9 @@ const getOtherUserProfile = asyncHandler(async (req, res) => {
         fullName: targetUser.fullName,
         phoneNumber: targetUser.isPhoneNumberHidden ? null : (targetUser.phoneNumber || ""),
         address: targetUser.isAddressHidden ? null : (targetUser.address || ""),
-        dateOfBirth: targetUser.dateOfBirth || "",
+        // dateOfBirth is deliberately NOT sent: it is personal data that only
+        // the owner sees (GET /users/profile). Both clients already treat a
+        // missing value as empty, and neither shows it on someone else's profile.
         gender: targetUser.gender || "",
         isBusinessProfile: targetUser.isBusinessProfile,
         businessId: businessId,
