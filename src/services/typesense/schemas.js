@@ -119,7 +119,9 @@ export const userToDoc = (user, business = null) => {
         isBusinessVerified: business ? Boolean(business.isVerified) : undefined,
         businessName: business ? str(business.businessName) : undefined,
         businessCategory: business ? str(business.category) : undefined,
-        location: str(user.location),
+        // "Hide address" on the profile covers the free-text location too: a
+        // hidden location must not be searchable or shown in search results.
+        location: user.isAddressHidden ? undefined : str(user.location),
         followersCount: Array.isArray(user.followers) ? user.followers.length : 0,
         accountStatus: str(user.accountStatus) || 'active',
         createdAt: toEpoch(user.createdAt),

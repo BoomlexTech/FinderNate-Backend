@@ -80,3 +80,6 @@ export const assertNotBlockedInChat = async (userId, participants = [], action =
         );
     }
 };
+
+// Chat mute rules (#38) live in a dependency-free module so they can be unit tested.
+export { MUTE_DURATIONS, muteStateFor, isChatMutedFor, muteFieldsFor } from '../../utils/chatMute.utils.js';

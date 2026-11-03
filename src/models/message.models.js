@@ -19,7 +19,7 @@ const MessageSchema = new mongoose.Schema({
     },
     messageType: {
         type: String,
-        enum: ['text', 'image', 'video', 'file', 'audio', 'location', 'payment_link', 'checkout', 'order_update', 'call', 'contact_seller', 'story_reply'],
+        enum: ['text', 'image', 'video', 'file', 'audio', 'location', 'payment_link', 'checkout', 'order_update', 'call', 'contact_seller', 'story_reply', 'shared_post'],
         default: 'text'
     },
     mediaUrl: String,
@@ -134,6 +134,26 @@ const MessageSchema = new mongoose.Schema({
         caption: String,
         // When the snapshot was taken, so a client can say "expired" rather
         // than silently offering a tap that goes nowhere.
+        capturedAt: Date,
+    },
+    // 🔁 In-app share of a post or vibe (Phase 2 #24). A snapshot taken when
+    // the message was sent (see utils/sharedPost.utils.js); tapping the bubble
+    // opens the live post, which is checked for visibility again.
+    sharedPost: {
+        postId: { type: mongoose.Schema.Types.ObjectId, ref: 'Post' },
+        authorId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+        authorUsername: String,
+        authorFullName: String,
+        authorProfileImageUrl: String,
+        postType: String,
+        contentType: String,
+        isVibe: Boolean,
+        caption: String,
+        mediaType: String,
+        thumbnailUrl: String,
+        title: String,
+        price: Number,
+        currency: String,
         capturedAt: Date,
     },
     // 📤 Forwarding support

@@ -154,7 +154,10 @@ const BusinessSchema = new mongoose.Schema({
     },
 
     // Flag to track if business profile is fully created (one-time creation)
-    isProfileCompleted: { type: Boolean, default: false }
+    isProfileCompleted: { type: Boolean, default: false },
+    // Phase 2 #20: show contact.socialMedia links on the public business
+    // profile. On by default; the owner can hide them from Business Settings.
+    showSocialLinks: { type: Boolean, default: true }
 }, { timestamps: true });
 
 // 🚀 Auto-verify business when subscription becomes active

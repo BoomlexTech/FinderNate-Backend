@@ -266,6 +266,13 @@ export const sanitizePostForGuest = (post, viewer = null) => {
       fullName: post.userId?.fullName,
       profileImageUrl: post.userId?.profileImageUrl,
     },
+    // The author's per-post switches (Phase 2 #18), so the public page can
+    // hide the like / comment / share buttons the author turned off.
+    settings: {
+      allowLikes: post.settings?.allowLikes !== false,
+      allowComments: post.settings?.allowComments !== false,
+      allowShares: post.settings?.allowShares !== false,
+    },
   };
 
   // Only include viewer-specific fields if viewer is logged in

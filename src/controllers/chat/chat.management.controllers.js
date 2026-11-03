@@ -6,7 +6,7 @@ import { asyncHandler } from '../../utils/asyncHandler.js';
 import mongoose from 'mongoose';
 import socketManager from '../../config/socket.js';
 import { redisClient } from '../../config/redis.config.js';
-import { safeEmitToChat, safeEmitToUser, checkFollowStatus, assertNotBlockedInChat, getBlockedParticipantIds } from './helpers.js';
+import { safeEmitToChat, safeEmitToUser, checkFollowStatus, assertNotBlockedInChat, getBlockedParticipantIds, muteFieldsFor } from './helpers.js';
 
 export const createChat = asyncHandler(async (req, res) => {
     const currentUserId = req.user._id;
@@ -215,6 +215,7 @@ export const getUserChats = asyncHandler(async (req, res) => {
 
     const [chats, total] = await Promise.all([
         Chat.find(chatFilter)
+            .select('+mutes')
             .sort({ lastMessageAt: -1 })
             .skip(skip)
             .limit(pageLimit)
@@ -423,6 +424,11 @@ export const getUserChats = asyncHandler(async (req, res) => {
         chatWithUsers.stats.totalMessages = messageCountMap[chatId] || 0;
         chatWithUsers.stats.totalParticipants = chatWithUsers.participants.length;
         chatWithUsers.unreadCount = unreadCountMap[chatId] || 0;
+
+        // The caller's own mute state only (#38); other people's mutes stay private.
+        Object.assign(chatWithUsers, muteFieldsFor(chat, currentUserId));
+        delete chatWithUsers.mutes;
+        delete chatWithUsers.mutedBy;
 
         return chatWithUsers;
     }));

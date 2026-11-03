@@ -58,10 +58,33 @@ const ChatSchema = new mongoose.Schema({
     },
 
     // 🔕 Mute settings
+    // Legacy list: a user here counts as muted with no end time. Nothing writes
+    // to it any more; `mutes` below is the live field.
     mutedBy: [{
         type: mongoose.Schema.Types.ObjectId,
         ref: 'User'
     }],
+    // Per-user notification mute (Phase 2 #38). `until: null` means "until I
+    // turn it off". Muting only silences push notifications for that user;
+    // messages, unread counts and the chat itself are unaffected.
+    // select:false because who muted a chat is private to each participant:
+    // only getUserChats (the caller's own state) and addMessage (push
+    // filtering) ask for it, with .select('+mutes').
+    mutes: {
+        type: [{
+            _id: false,
+            userId: {
+                type: mongoose.Schema.Types.ObjectId,
+                ref: 'User',
+                required: true
+            },
+            until: {
+                type: Date,
+                default: null
+            }
+        }],
+        select: false
+    },
 
     // 📍 Pinned messages
     pinnedMessages: [{

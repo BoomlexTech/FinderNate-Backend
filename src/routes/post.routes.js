@@ -20,6 +20,7 @@ import {
     deleteContent,
     editPost,
     togglePostPrivacy,
+    updatePostInteractionSettings,
 } from "../controllers/post.controllers.js";
 import { getHomeFeed } from "../controllers/homeFeed.controllers.js";
 import { likePost, unlikePost, likeComment, unlikeComment, getLikedByUsers } from "../controllers/like.controllers.js";
@@ -134,6 +135,9 @@ router.route("/edit/:postId").put(verifyJWT, editPost);
 
 // Toggle post privacy route
 router.route("/:postId/privacy").put(verifyJWT, togglePostPrivacy);
+
+// Turn likes / comments / sharing on or off for one post (Phase 2 #18)
+router.route("/:postId/interaction-settings").patch(verifyJWT, updatePostInteractionSettings);
 
 // Online store — public, no auth required (must be before /:postId catch-all)
 router.route("/online-store/products").get(getOnlineStoreProducts);

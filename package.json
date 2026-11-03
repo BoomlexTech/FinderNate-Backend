@@ -12,6 +12,7 @@
     "start": "node src/index.js",
     "start:cluster": "pm2-runtime start ecosystem.config.cjs --env production",
     "build": "echo 'Build completed - Node.js project ready for deployment'",
+    "test": "node --test \"test/unit/**/*.test.js\"",
     "typesense:bootstrap": "node src/scripts/typesense.bootstrap.js",
     "typesense:backfill": "node src/scripts/typesense.backfill.js",
     "typesense:sync": "node src/scripts/typesense.sync.js",

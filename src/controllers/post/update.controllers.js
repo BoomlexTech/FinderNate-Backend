@@ -5,6 +5,8 @@ import Post, { deriveHashtags } from "../../models/userPost.models.js";
 import { getCoordinates } from "../../utils/getCoordinates.js";
 import { FeedCacheManager } from "../../utils/cache.utils.js";
 import { redisClient } from "../../config/redis.config.js";
+import mongoose from "mongoose";
+import { interactionSettingsOf } from "./visibility.js";
 
 export const editPost = asyncHandler(async (req, res) => {
     const { postId } = req.params;
@@ -220,6 +222,59 @@ export const togglePostPrivacy = asyncHandler(async (req, res) => {
         privacy: updatedPost.settings.privacy,
         post: updatedPost
     }, `Post privacy updated to ${privacy}`));
+});
+
+/**
+ * PATCH /posts/:postId/interaction-settings   (Phase 2 #18)
+ *
+ * Lets the author switch likes, comments and sharing on or off for one post or
+ * vibe. Body: any of { allowLikes, allowComments, allowShares } as booleans;
+ * fields left out are unchanged. The switches are enforced by likePost,
+ * createComment and the share endpoints, not just hidden in the UI.
+ */
+export const updatePostInteractionSettings = asyncHandler(async (req, res) => {
+    const { postId } = req.params;
+    const userId = req.user?._id;
+
+    if (!userId) throw new ApiError(401, "User authentication required");
+    if (!mongoose.isValidObjectId(postId)) throw new ApiError(404, "Post not found");
+
+    const update = {};
+    for (const key of ['allowLikes', 'allowComments', 'allowShares']) {
+        const value = req.body?.[key];
+        if (value === undefined) continue;
+        if (typeof value !== 'boolean') throw new ApiError(400, `${key} must be true or false`);
+        update[`settings.${key}`] = value;
+    }
+    if (Object.keys(update).length === 0) {
+        throw new ApiError(400, "Send at least one of allowLikes, allowComments or allowShares");
+    }
+
+    const post = await Post.findById(postId).select('userId').lean();
+    if (!post) throw new ApiError(404, "Post not found");
+    if (post.userId.toString() !== userId.toString()) {
+        throw new ApiError(403, "You can only change your own posts");
+    }
+
+    const updated = await Post.findByIdAndUpdate(
+        postId,
+        { $set: { ...update, updatedAt: new Date() } },
+        { new: true }
+    ).select('settings').lean();
+
+    await FeedCacheManager.invalidateUserFeed(userId);
+    if ('settings.allowShares' in update) {
+        // The public share pages cache the post, including whether it may be shared.
+        await Promise.allSettled([
+            redisClient.del(`fn:share:post:${postId}`),
+            redisClient.del(`fn:share:reel:${postId}`),
+        ]);
+    }
+
+    return res.status(200).json(new ApiResponse(200, {
+        postId,
+        ...interactionSettingsOf(updated),
+    }, "Post settings updated"));
 });
 
 /*

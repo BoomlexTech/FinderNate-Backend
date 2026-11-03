@@ -56,7 +56,7 @@ const searchUsers = asyncHandler(async (req, res) => {
     }
 
     let user = await User.find(searchQuery)
-        .select("username fullName profileImageUrl bio location isBusinessProfile businessProfileId")
+        .select("username fullName profileImageUrl bio location isAddressHidden isBusinessProfile businessProfileId")
         .populate({
             path: 'businessProfileId',
             select: 'category subcategory businessName businessType'
@@ -77,7 +77,7 @@ const searchUsers = asyncHandler(async (req, res) => {
         }
 
         user = await User.find(fallbackQuery)
-            .select("username fullName profileImageUrl bio location isBusinessProfile businessProfileId")
+            .select("username fullName profileImageUrl bio location isAddressHidden isBusinessProfile businessProfileId")
             .populate({
                 path: 'businessProfileId',
                 select: 'category subcategory businessName businessType'
@@ -99,7 +99,7 @@ const searchUsers = asyncHandler(async (req, res) => {
         .populate({
             path: 'userId',
             match: { accountStatus: "active" },
-            select: "username fullName profileImageUrl bio location isBusinessProfile businessProfileId"
+            select: "username fullName profileImageUrl bio location isAddressHidden isBusinessProfile businessProfileId"
         })
         .select('category subcategory businessName businessType tags');
 
@@ -136,7 +136,8 @@ const searchUsers = asyncHandler(async (req, res) => {
             username: rawUserObj.username,
             fullName: rawUserObj.fullName,
             bio: rawUserObj.bio,
-            location: rawUserObj.location,
+            // Hidden by the owner's "Hide address" switch (#12).
+            location: rawUserObj.isAddressHidden ? null : rawUserObj.location,
             profileImageUrl: rawUserObj.profileImageUrl,
             subscriptionBadge: rawUserObj.subscriptionBadge || null
         };

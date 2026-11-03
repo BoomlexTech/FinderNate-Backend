@@ -419,6 +419,10 @@ export const getHomeFeed = asyncHandler(async (req, res) => {
                     'settings.visibility': 1,
                     'settings.commentsEnabled': 1,
                     'settings.likesVisible': 1,
+                    // Per-post switches the clients use to hide buttons (#18).
+                    'settings.allowLikes': 1,
+                    'settings.allowComments': 1,
+                    'settings.allowShares': 1,
                     'engagement.likes': 1,
                     'engagement.comments': 1,
                     'engagement.shares': 1,

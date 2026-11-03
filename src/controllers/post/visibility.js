@@ -35,7 +35,11 @@ export const assertCanViewPostById = async (postId, viewerId, options = {}) => {
         throw new ApiError(404, notFoundMessage);
     }
 
-    const post = await Post.findById(postId).select("userId settings.privacy").lean();
+    // The interaction switches ride along so callers that go on to like,
+    // comment or share can check them without a second read (#18).
+    const post = await Post.findById(postId)
+        .select("userId settings.privacy settings.allowLikes settings.allowComments settings.allowShares")
+        .lean();
     if (!post) throw new ApiError(404, notFoundMessage);
 
     const authorId = post.userId?._id ?? post.userId;
@@ -83,3 +87,7 @@ export const createPostVisibilityChecker = (viewerId) => {
         return await byAuthor.get(authorIdStr);
     };
 };
+
+// Per-post like/comment/share switches (#18) live in a dependency-free module
+// so they can be unit tested.
+export { isPostInteractionAllowed, assertPostInteractionAllowed, interactionSettingsOf } from '../../utils/postInteraction.utils.js';

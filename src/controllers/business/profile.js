@@ -8,6 +8,7 @@ import { getCoordinates } from "../../utils/getCoordinates.js";
 import mongoose from "mongoose";
 import { BUSINESS_CATEGORIES, extractTagsFromText } from "./helpers.js";
 import { cancelBoostsForPost } from "../../utils/boostServing.js";
+import { normalizeSocialLinks } from "../../utils/socialLinks.utils.js";
 
 // Canonical forms of the two statutory identity numbers: GSTIN is 15 uppercase
 // alphanumerics, Aadhaar is 12 digits, and neither contains a space.
@@ -76,6 +77,9 @@ export const createBusinessProfile = asyncHandler(async (req, res) => {
     }
     if (contact && contact.website && !/^https?:\/\/.+/.test(contact.website)) {
         throw new ApiError(400, "Invalid contact.website URL");
+    }
+    if (contact && contact.socialMedia !== undefined) {
+        contact.socialMedia = normalizeSocialLinks(contact.socialMedia);
     }
 
     if (trimmedBusinessName) {
@@ -322,11 +326,16 @@ const stripPrivateBusinessFields = (business) => {
         const publicContact = { ...publicBusiness.contact };
         delete publicContact.phone;
         delete publicContact.email;
+        // The owner can hide their social links from the public profile (#20).
+        if (publicBusiness.showSocialLinks === false) {
+            delete publicContact.socialMedia;
+        }
         publicBusiness.contact = publicContact;
     }
 
     return publicBusiness;
 };
+
 
 // GET /api/v1/business/:id
 export const getBusinessById = asyncHandler(async (req, res) => {
@@ -410,8 +419,16 @@ export const updateBusinessProfile = asyncHandler(async (req, res) => {
         website,
         tags,
         gstNumber,
-        aadhaarNumber
+        aadhaarNumber,
+        showSocialLinks
     } = req.body;
+
+    if (showSocialLinks !== undefined) {
+        if (typeof showSocialLinks !== 'boolean') {
+            throw new ApiError(400, "showSocialLinks must be true or false");
+        }
+        business.showSocialLinks = showSocialLinks;
+    }
 
     if (businessName) {
         const trimmedBusinessName = businessName.trim();
@@ -587,6 +604,10 @@ export const updateBusinessProfile = asyncHandler(async (req, res) => {
 
         if (contact.website && !/^https?:\/\/.+/.test(contact.website)) {
             throw new ApiError(400, "Invalid contact.website URL");
+        }
+
+        if (contact.socialMedia !== undefined) {
+            contact.socialMedia = normalizeSocialLinks(contact.socialMedia);
         }
 
         business.contact = { ...business.contact, ...contact };

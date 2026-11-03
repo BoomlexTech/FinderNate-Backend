@@ -413,7 +413,8 @@ const getOtherUserProfile = asyncHandler(async (req, res) => {
         subscriptionBadge: subscriptionBadge,
         bio: targetUser.bio || "",
         link: targetUser.link || "",
-        location: targetUser.location || "",
+        // "Hide address" hides the free-text location as well (#12).
+        location: targetUser.isAddressHidden ? null : (targetUser.location || ""),
         profileImageUrl: targetUser.profileImageUrl || "",
         followersCount,
         followingCount,
@@ -512,6 +513,7 @@ const deleteAccount = asyncHandler(async (req, res) => {
                     participants: userId,
                     admins: userId,
                     mutedBy: userId,
+                    mutes: { userId },
                     blockedUsers: userId
                 }
             }

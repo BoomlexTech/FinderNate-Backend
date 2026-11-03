@@ -18,6 +18,7 @@ import { checkContentVisibility, getViewableUserIds } from "../../middlewares/pr
 // references, shared URLs. A deleted post answers with an explicit tombstone
 // instead of a 404 the clients render as a blank screen.
 import { sendDeletedTombstone } from "../../utils/contentTombstone.utils.js";
+import { publicUserPopulate } from "../../utils/profilePrivacy.utils.js";
 
 /**
  * Post contentTypes a Free business account cannot promote: they are kept out of
@@ -248,7 +249,7 @@ export const getMyPosts = asyncHandler(async (req, res) => {
     if (contentType) filter.contentType = contentType;
 
     const posts = await Post.find(filter)
-        .populate('userId', 'username profileImageUrl fullName isVerified location bio')
+        .populate(publicUserPopulate('userId', 'username profileImageUrl fullName isVerified location bio'))
         .sort({ createdAt: -1 })
         .skip((page - 1) * limit)
         .limit(limit);
@@ -425,7 +426,7 @@ export const getUserProfilePosts = asyncHandler(async (req, res) => {
 
     try {
         const posts = await Post.find(filter)
-            .populate('userId', 'username profileImageUrl fullName isVerified location bio privacy isFullPrivate')
+            .populate(publicUserPopulate('userId', 'username profileImageUrl fullName isVerified location bio privacy isFullPrivate'))
             .populate('mentions', 'username fullName profileImageUrl')
             .sort(sortObj)
             .skip(skip)

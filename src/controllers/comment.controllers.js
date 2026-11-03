@@ -9,7 +9,7 @@ import { createCommentNotification } from "./notification.controllers.js";
 import { addBadgesToNestedUsers } from "../utils/userBadge.utils.js";
 import { redisClient, RedisKeys, RedisTTL } from "../config/redis.config.js";
 import socketManager from "../config/socket.js";
-import { assertCanViewPostById } from "./post/visibility.js";
+import { assertCanViewPostById, assertPostInteractionAllowed } from "./post/visibility.js";
 
 const ENGAGEMENT_TTL = RedisTTL.POST_ENGAGEMENT;
 
@@ -94,6 +94,8 @@ export const createComment = asyncHandler(async (req, res) => {
     // getPostById defends was bypassed by commenting instead of reading.
     // The post is fetched here anyway, so the notification below reuses it.
     const targetPost = await assertCanViewPostById(postId, userId);
+    // The author can switch comments off per post (#18); replies count too.
+    assertPostInteractionAllowed(targetPost, userId, 'comment');
 
     // If replying to a comment, fetch parent info and set up thread structure
     let finalReplyToUserId = replyToUserId || null;

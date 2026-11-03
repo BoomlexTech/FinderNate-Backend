@@ -30,7 +30,9 @@ import {
     editMessage,
     forwardMessage,
     togglePinMessage,
-    getPinnedMessages
+    getPinnedMessages,
+    muteChat,
+    unmuteChat
 } from '../controllers/chat/index.js';
 
 const router = express.Router();
@@ -53,6 +55,10 @@ router.patch('/:chatId/decline', declineChatRequest);
 
 // Update chat theme color
 router.patch('/:chatId/theme', updateChatTheme);
+
+// Mute / unmute push notifications for one chat (Phase 2 #38)
+router.patch('/:chatId/mute', muteChat);
+router.delete('/:chatId/mute', unmuteChat);
 
 // Set, replace or clear a group's image (admins only; multipart 'groupImage')
 router.patch('/:chatId/group-image', upload.single('groupImage'), updateGroupImage);

@@ -209,28 +209,23 @@ UserSchema.methods.generateRefreshToken = function () {
 };
 
 // 📞 Check if user has calling features access
+//
+// Must give the same answer as verifyCallingAccess (middlewares/
+// subscription.middleware.js), which is what actually gates POST /calls/initiate:
+// only an active PAID plan may start a call (Phase 2 #16). This method used to
+// let every business profile call for free, which contradicted the gate; it is
+// unused today and kept only so future callers get the correct rule.
+// Receiving a call needs no plan.
 UserSchema.methods.hasCallingAccess = async function () {
     const Subscription = mongoose.model('Subscription');
 
-    // Business profiles always have calling access
-    if (this.isBusinessProfile) {
-        return true;
-    }
-
-    // Check if user has an active paid subscription
     const subscription = await Subscription.findOne({
         userId: this._id,
         status: 'active',
         endDate: { $gt: new Date() }
-    });
+    }).select('plan').lean();
 
-    // Free users don't have calling access
-    if (!subscription || subscription.plan === 'free') {
-        return false;
-    }
-
-    // All paid plans (basic, pro, premium, business) have calling access
-    return true;
+    return !!subscription && ['small_business', 'corporate'].includes(subscription.plan);
 };
 
 // 📋 Get user subscription tier

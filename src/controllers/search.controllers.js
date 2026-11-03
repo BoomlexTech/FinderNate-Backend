@@ -416,7 +416,8 @@ export const searchProfiles = asyncHandler(async (req, res) => {
     // Mongo fallback — normalized to the same user shape as the Typesense path.
     const rx = new RegExp(escapeRegex(query), 'i');
     const filter = {
-        $or: [{ username: rx }, { fullName: rx }, { bio: rx }, { location: rx }],
+        // Location only matches for users who have not hidden it (#12).
+        $or: [{ username: rx }, { fullName: rx }, { bio: rx }, { location: rx, isAddressHidden: { $ne: true } }],
         accountStatus: 'active',
         _id: { $nin: blockedUsers },
     };
@@ -424,7 +425,7 @@ export const searchProfiles = asyncHandler(async (req, res) => {
         User.find(filter)
             .skip((page - 1) * limit)
             .limit(limit)
-            .select('username fullName profileImageUrl bio location isBusinessProfile isBlueTickVerified')
+            .select('username fullName profileImageUrl bio location isAddressHidden isBusinessProfile isBlueTickVerified')
             .lean(),
         User.countDocuments(filter),
     ]);
@@ -434,7 +435,7 @@ export const searchProfiles = asyncHandler(async (req, res) => {
         fullName: u.fullName || null,
         profileImageUrl: u.profileImageUrl || null,
         bio: u.bio || null,
-        location: u.location || null,
+        location: u.isAddressHidden ? null : (u.location || null),
         isBusinessProfile: !!u.isBusinessProfile,
         isBlueTickVerified: !!u.isBlueTickVerified,
         isBusinessVerified: false,

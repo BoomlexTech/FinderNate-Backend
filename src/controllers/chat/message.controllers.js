@@ -12,7 +12,8 @@ import { sendNotification } from '../../config/firebase-admin.config.js';
 import notificationCache from '../../utils/notificationCache.utils.js';
 import { redisClient } from '../../config/redis.config.js';
 import { calculateMessageStatus } from '../../utils/messageStatus.utils.js';
-import { safeEmitToChat, assertNotBlockedInChat } from './helpers.js';
+import { safeEmitToChat, assertNotBlockedInChat, isChatMutedFor } from './helpers.js';
+import { buildSharedPostSnapshot, sharedPostSummary, recordPostShare } from '../../utils/sharedPost.utils.js';
 
 // Ceiling on how many messages one request may pull, matching the one
 // getUserChats already applies. Without it ?limit=100000 made the server fetch,
@@ -199,7 +200,17 @@ export const addMessage = asyncHandler(async (req, res) => {
             : body.storyReference
     ) : null;
 
-    if ((!message || message.trim().length === 0) && !mediaFile) {
+    // Sharing a post or vibe into the chat (#24). Body: { messageType:
+    // 'shared_post', sharedPostId, message? }. The snapshot is built
+    // server-side; nothing the client sends about the post is trusted.
+    let sharedPost = null;
+    if (messageType === 'shared_post') {
+        const sharedPostId = body.sharedPostId || body.postId;
+        if (!sharedPostId) throw new ApiError(400, 'sharedPostId is required to share a post');
+        sharedPost = await buildSharedPostSnapshot(sharedPostId, currentUserId);
+    }
+
+    if ((!message || message.trim().length === 0) && !mediaFile && !sharedPost) {
         throw new ApiError(400, 'Message content or media file is required');
     }
 
@@ -207,12 +218,14 @@ export const addMessage = asyncHandler(async (req, res) => {
         ? message.trim()
         : mediaFile
             ? `📎 ${mediaFile.originalname}`
-            : '';
+            : sharedPost
+                ? sharedPostSummary(sharedPost)
+                : '';
 
     const chat = await Chat.findOne({
         _id: chatId,
         participants: currentUserId
-    });
+    }).select('+mutes'); // needed to skip pushes to participants who muted the chat (#38)
 
     if (!chat) {
         throw new ApiError(404, 'Chat not found or access denied');
@@ -256,6 +269,10 @@ export const addMessage = asyncHandler(async (req, res) => {
 
     if (productReference) {
         messageData.productReference = productReference;
+    }
+
+    if (sharedPost) {
+        messageData.sharedPost = sharedPost;
     }
 
     if (storyReference) {
@@ -376,10 +393,18 @@ export const addMessage = asyncHandler(async (req, res) => {
         message: populatedMessage
     });
 
+    if (sharedPost) {
+        // Counted like any other share; fire-and-forget, never fails the send.
+        recordPostShare(sharedPost.postId, currentUserId);
+    }
+
     (async () => {
         try {
+            // Participants who muted this chat get no push (#38). The message
+            // itself, unread counts and socket events are unaffected.
             const otherParticipants = chat.participants.filter(
                 participantId => participantId.toString() !== currentUserId.toString()
+                    && !isChatMutedFor(chat, participantId)
             );
 
             if (otherParticipants.length > 0) {
@@ -399,7 +424,9 @@ export const addMessage = asyncHandler(async (req, res) => {
                     // attachment. Without this case it fell into the final
                     // branch and pushed "Sent a file", which describes nothing
                     // that happened.
-                    body: (messageType === 'text' || messageType === 'story_reply')
+                    body: messageType === 'shared_post'
+                        ? (message && message.trim() ? `${sharedPostSummary(sharedPost)}: ${finalMessage.length > 40 ? finalMessage.substring(0, 40) + '…' : finalMessage}` : sharedPostSummary(sharedPost))
+                        : (messageType === 'text' || messageType === 'story_reply')
                         ? (messageType === 'story_reply'
                             ? `Replied to your story: ${finalMessage.length > 40 ? finalMessage.substring(0, 40) + '…' : finalMessage}`
                             : finalMessage.length > 50 ? finalMessage.substring(0, 50) + '...' : finalMessage)
