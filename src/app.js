@@ -261,6 +261,7 @@ import { metaRouter, emailRouter } from "./routes/meta.routes.js";
 import e2eeRouter from "./routes/e2ee.routes.js";
 import gifRouter from "./routes/gif.routes.js";
 import { kycRouter, adsRouter, listingsRouter, platformPayRouter, growthRouter, seoRouter } from "./routes/phase4.routes.js";
+import { soundsRouter, editsRouter, enhanceRouter } from "./routes/phase5.routes.js";
 
 
 
@@ -298,6 +299,10 @@ app.use("/api/v1/listings", listingsRouter);
 app.use("/api/v1/platform-payments", platformPayRouter);
 app.use("/api/v1/business-growth", growthRouter);
 app.use("/api/v1/seo", seoRouter);
+// Phase 5
+app.use("/api/v1/sounds", soundsRouter);
+app.use("/api/v1/edits", editsRouter);
+app.use("/api/v1/enhance", enhanceRouter);
 app.use("/api/v1/drafts", draftRouter);
 app.use("/api/v1/meta", metaRouter);
 app.use("/api/v1/email", emailRouter);

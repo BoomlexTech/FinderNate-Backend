@@ -24,7 +24,9 @@ const NotificationSchema = new mongoose.Schema({
         enum: ['like', 'unlike', 'comment', 'follow', 'mention', 'message', 'tag', 'storyView', 'order', 'others', 'business_verification', 'subscription',
             'story_like', 'story_comment', 'repost', 'collab_invite', 'collab_accepted', 'milestone',
             // Phase 4: KYC (#74), business views (#75), ads (#27), listings (#80), plan expiry (#77).
-            'kyc', 'business_views', 'ad', 'listing', 'plan_expiry'],
+            'kyc', 'business_views', 'ad', 'listing', 'plan_expiry',
+            // Phase 5: duets (#49), story stickers (#47), music (#29).
+            'duet', 'story_question', 'story_question_reply', 'story_countdown', 'sound'],
         required: true
     },
     message: {

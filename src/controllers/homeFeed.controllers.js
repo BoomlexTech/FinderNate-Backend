@@ -458,6 +458,10 @@ export const getHomeFeed = asyncHandler(async (req, res) => {
                     hashtags: 1,
                     collaborators: 1,
                     pinnedCommentId: 1,
+                    // Phase 5: the "♪" label (#29) and "Duet with" credit (#49).
+                    music: 1,
+                    duet: 1,
+                    'settings.allowDuets': 1,
                     // Include customization fields (product, service, business, normal)
                     'customization.product': 1,
                     'customization.service': 1,

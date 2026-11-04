@@ -317,6 +317,8 @@ const SettingsSchema = new mongoose.Schema({
     commentsFilter: String,
     hideLikeCount: Boolean,
     allowDownload: Boolean,
+    // Phase 5 #49: undefined means duets are allowed.
+    allowDuets: Boolean,
     customAudience: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }]
 }, { _id: false });
 
@@ -347,6 +349,32 @@ const CollaboratorSchema = new mongoose.Schema({
     status: { type: String, enum: ['pending', 'accepted', 'declined'], default: 'pending' },
     invitedAt: { type: Date, default: Date.now },
     respondedAt: { type: Date, default: null }
+}, { _id: false });
+
+// 🎵 Music under a post, vibe or story (Phase 5 #29). The details are copied from
+// the Sound at publish time so a feed card needs no second lookup. `mixed` is
+// true when the song is already part of the video's audio (vibes and stories
+// that went through the editor); for photos the app plays `audioUrl` itself,
+// starting at `startSec` for `durationSec`.
+export const MusicSchema = new mongoose.Schema({
+    soundId: { type: mongoose.Schema.Types.ObjectId, ref: 'Sound' },
+    source: { type: String, enum: ['library', 'original'] },
+    title: String,
+    artist: String,
+    audioUrl: String,
+    coverUrl: String,
+    startSec: Number,
+    durationSec: Number,
+    volume: Number,
+    mixed: { type: Boolean, default: false }
+}, { _id: false });
+
+// 🎭 Duet / reaction (Phase 5 #49): the video this one answers.
+export const DuetSchema = new mongoose.Schema({
+    postId: { type: mongoose.Schema.Types.ObjectId, ref: 'Post' },
+    authorId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    authorUsername: String,
+    layout: String
 }, { _id: false });
 
 // 📬 Post Schema
@@ -380,6 +408,9 @@ const PostSchema = new mongoose.Schema({
     pinnedCommentId: { type: mongoose.Schema.Types.ObjectId, ref: 'Comment', default: null },
     // Phase 2 #50/#57
     collaborators: { type: [CollaboratorSchema], default: undefined },
+    // Phase 5
+    music: { type: MusicSchema, default: undefined },
+    duet: { type: DuetSchema, default: undefined },
     // Phase 2 #46: view thresholds the owner has already been told about.
     viewMilestones: { type: [Number], default: undefined, select: false },
     media: [MediaSchema],
@@ -500,5 +531,9 @@ PostSchema.index({ 'engagement.likes': -1, 'engagement.comments': -1, createdAt:
 PostSchema.index({ 'collaborators.userId': 1, createdAt: -1 }, { sparse: true });
 PostSchema.index({ subcategories: 1, createdAt: -1 }, { sparse: true });
 PostSchema.index({ hashtags: 1, createdAt: -1 });
+
+// Phase 5: the page of a sound lists the posts that use it; duets of a video.
+PostSchema.index({ 'music.soundId': 1, createdAt: -1 }, { sparse: true });
+PostSchema.index({ 'duet.postId': 1, createdAt: -1 }, { sparse: true });
 
 export default mongoose.model('Post', PostSchema);

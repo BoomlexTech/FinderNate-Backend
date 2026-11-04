@@ -2,6 +2,7 @@ import express from "express";
 import { uploadStory, fetchStoriesFeed, fetchStoriesByUser, markStorySeen, fetchStoryViewers, fetchArchivedStoriesByUser, archiveStory, unarchiveStory, deleteStory } from "../controllers/story.controllers.js";
 import { verifyJWT, optionalVerifyJWT } from "../middlewares/auth.middleware.js";
 import { likeStory, unlikeStory, getStoryLikes, commentOnStory, getStoryComments, deleteStoryComment, repostToStory } from "../controllers/storyEngagement.controllers.js";
+import { respondToSticker, getStickerResults, replyToQuestion } from "../controllers/storyStickers.controllers.js";
 import { upload } from "../middlewares/multerConfig.js";
 import { getBlockedUsers as getBlockedUsersMiddleware } from "../middlewares/blocking.middleware.js";
 
@@ -15,7 +16,14 @@ router.get("/:storyId/likes", verifyJWT, getStoryLikes);
 router.route("/:storyId/comments").post(verifyJWT, commentOnStory).get(verifyJWT, getStoryComments);
 router.delete("/:storyId/comments/:commentId", verifyJWT, deleteStoryComment);
 
-// Upload a story (single image/video)
+// Phase 5 #47: poll, quiz, slider, countdown and question stickers.
+router.post("/:storyId/stickers/:stickerId/respond", verifyJWT, respondToSticker);
+router.get("/:storyId/stickers/results", verifyJWT, getStickerResults);
+router.post("/:storyId/stickers/:stickerId/questions/:responseId/reply", verifyJWT, replyToQuestion);
+
+// Upload a story (single image/video). Phase 5 adds the optional fields
+// editId, music and stickers; see docs/PHASE5_API.md.
+
 router.post("/upload", verifyJWT, upload.single("media"), uploadStory);
 
 // Fetch stories feed (from followed + self)

@@ -3,6 +3,7 @@ import { adminKycQueue, adminKycDecision } from "../controllers/kyc.controllers.
 import { adminListAds, adminRejectAd } from "../controllers/ads.controllers.js";
 import { adminListings, adminListingDecision } from "../controllers/listings.controllers.js";
 import { adminB2bStatements } from "../controllers/businessGrowth.controllers.js";
+import { adminListSounds, adminCreateSound, adminUpdateSound, adminDeleteSound, adminSoundUpload } from "../controllers/sounds.controllers.js";
 import {
     // Authentication
     adminLogin,
@@ -300,5 +301,11 @@ router.post("/ads/:id/reject", requirePermission('manageBusiness'), adminRejectA
 router.get("/listings", requirePermission('manageBusiness'), adminListings);
 router.post("/listings/:id/decision", requirePermission('manageBusiness'), adminListingDecision);
 router.get("/b2b/statements", requirePermission('viewAnalytics'), adminB2bStatements);
+
+// ── Phase 5: the royalty-free music library (#29) ──
+router.get("/sounds", requirePermission('deleteContent'), adminListSounds);
+router.post("/sounds", requirePermission('deleteContent'), adminSoundUpload, adminCreateSound);
+router.patch("/sounds/:id", requirePermission('deleteContent'), adminUpdateSound);
+router.delete("/sounds/:id", requirePermission('deleteContent'), adminDeleteSound);
 
 export default router;

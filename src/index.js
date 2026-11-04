@@ -13,6 +13,8 @@ import { startTrendingJobs } from './jobs/trending.job.js';
 import { startEmailDigestJob } from './jobs/emailDigest.job.js';
 import { startChatExpiryJob } from './jobs/chatExpiry.job.js';
 import { startPhase4Jobs } from './jobs/phase4.job.js';
+import { startPhase5Jobs } from './jobs/phase5.job.js';
+import { startCreatorWorker } from './queues/creatorQueue.js';
 import { startLikeWorker } from './queues/likeQueue.js';
 // import { seedLikesToRedis } from './scripts/seedLikesToRedis.js';
 import { redisClient } from './config/redis.config.js';
@@ -92,6 +94,8 @@ connectDB()
             startEmailDigestJob();
             startChatExpiryJob();
             startPhase4Jobs();
+            startPhase5Jobs();
+            startCreatorWorker().catch((e) => console.error('[creator] worker did not start:', e?.message || e));
             startLikeWorker();
         });
 

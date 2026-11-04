@@ -12,14 +12,14 @@ import { annotateSeen } from '../utils/seenFlags.utils.js';
 import { attachCollaborators } from '../utils/collab.utils.js';
 import { cityKey, discountOf, cleanTagQuery } from '../utils/suggestions.utils.js';
 
-const CARD_FIELDS = 'userId postType contentType caption description media category hashtags createdAt engagement settings.privacy settings.allowLikes settings.allowComments settings.allowShares customization.product customization.service.name customization.service.price customization.service.currency customization.business.businessName collaborators';
+const CARD_FIELDS = 'userId postType contentType caption description media category hashtags createdAt engagement settings.privacy settings.allowLikes settings.allowComments settings.allowShares customization.product customization.service.name customization.service.price customization.service.currency customization.business.businessName collaborators music duet settings.allowDuets';
 
 /**
  * Load posts by id for a discovery surface, in that order, minus anything
  * this viewer may not see: private or blocked, and listings from businesses
  * without a plan (the same discovery rule explore and search use).
  */
-const loadCards = async (ids, req, limit) => {
+export const loadCards = async (ids, req, limit) => {
     const viewerId = req.user?._id || null;
     const blocked = new Set((req.blockedUsers || []).map(String));
     const valid = ids.filter((id) => mongoose.Types.ObjectId.isValid(id));

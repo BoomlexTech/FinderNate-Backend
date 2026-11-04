@@ -1,4 +1,5 @@
 import mongoose from 'mongoose';
+import { MusicSchema } from './userPost.models.js';
 
 const StorySchema = new mongoose.Schema({
     userId: {
@@ -31,6 +32,24 @@ const StorySchema = new mongoose.Schema({
         default: undefined
     },
     commentsCount: { type: Number, default: 0 },
+    // Phase 5 #29: music under the story. For a video the song is already mixed
+    // into the audio (`mixed`); for a photo the app plays `audioUrl`.
+    music: { type: MusicSchema, default: undefined },
+    // Phase 5 #47: poll, quiz, emoji slider, countdown and "Ask me anything"
+    // stickers. Placement is 0..1 of the frame. Answers live in
+    // StickerResponse; the story only carries the stickers themselves.
+    stickers: {
+        type: [new mongoose.Schema({
+            id: { type: String, required: true },
+            type: { type: String, enum: ['poll', 'quiz', 'slider', 'countdown', 'question'], required: true },
+            x: Number,
+            y: Number,
+            scale: Number,
+            rotation: Number,
+            data: mongoose.Schema.Types.Mixed
+        }, { _id: false })],
+        default: undefined
+    },
     // Set when the expiry job kept this story because people had liked or
     // commented on it: it went to the owner's archive, with its likes,
     // comments and viewers, instead of being deleted (Phase 2 #32).

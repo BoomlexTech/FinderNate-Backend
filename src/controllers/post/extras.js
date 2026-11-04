@@ -6,6 +6,11 @@ import { resolveMentions, notifyMentions } from '../../utils/mentions.utils.js';
 import { notifyActivity } from '../../utils/activityNotify.utils.js';
 import { applyMediaLayout, normalizeCollaboratorIds, normalizeSubcategories } from '../../utils/postExtras.utils.js';
 import { finishDraft } from '../draft.controllers.js';
+import { loadFinishedEdit, markEditUsed } from '../edits.controllers.js';
+import Sound from '../../models/sound.models.js';
+import { loadUsableSound, musicFieldFrom, bumpSoundUsage } from '../../services/sounds.service.js';
+import { enqueueOriginalAudio } from '../../queues/creatorQueue.js';
+import { sanitizeMusicChoice, fitMusicWindow, parseJsonField, MUSIC_MAX_SECONDS } from '../../utils/phase5.rules.js';
 
 const isValidId = (id) => mongoose.Types.ObjectId.isValid(id);
 
@@ -62,7 +67,27 @@ export const buildPostExtras = async (body = {}, userId, { explicitMentions = []
         normalizeCollaboratorIds(body.collaborators ?? body.collaboratorIds, userId, isValidId),
     );
 
+    // Phase 5: a video that went through the editor (#29, #34, #49) and music on photos (#29).
+    const edit = await loadFinishedEdit(body.editId, userId);
     const fields = { mentions };
+    let chosenSoundId = null;
+    if (edit?.duet?.postId) {
+        fields.duet = { postId: edit.duet.postId, authorId: edit.duet.authorId, authorUsername: edit.duet.authorUsername, layout: edit.duet.layout };
+    }
+    if (edit?.music?.soundId) {
+        const sound = await Sound.findById(edit.music.soundId).lean();
+        if (sound) { fields.music = musicFieldFrom(sound, edit.music, { mixed: true }); chosenSoundId = sound._id; }
+    } else if (body.music) {
+        if (edit || isVibe || ['reel', 'video'].includes(body.postType)) {
+            throw new ApiError(400, 'To add music to a video, use the video editor first.');
+        }
+        const choice = sanitizeMusicChoice(parseJsonField(body.music, null), { max: MUSIC_MAX_SECONDS.post });
+        if (choice) {
+            const sound = await loadUsableSound(choice.soundId, userId);
+            fields.music = musicFieldFrom(sound, fitMusicWindow(choice, sound.durationSec), { mixed: false });
+            chosenSoundId = sound._id;
+        }
+    }
     if (subcategories !== undefined) fields.subcategories = subcategories;
     if (collaboratorIds.length) {
         fields.collaborators = collaboratorIds.map((id) => ({ userId: id, status: 'pending', invitedAt: new Date() }));
@@ -77,6 +102,19 @@ export const buildPostExtras = async (body = {}, userId, { explicitMentions = []
                 finishDraft(body.draftId, userId, post),
                 notifyMentions({ mentionIds: mentions, authorId: userId, postId: post._id }),
                 sendCollabInvites(post, userId, collaboratorIds),
+                chosenSoundId ? bumpSoundUsage(chosenSoundId) : null,
+                edit ? markEditUsed(edit._id, { postId: post._id }) : null,
+                post.duet?.authorId ? notifyActivity({
+                    recipientId: post.duet.authorId,
+                    senderId: userId,
+                    type: 'duet',
+                    message: 'made a duet with your video',
+                    postId: post._id,
+                    push: { title: 'New duet', url: '/notifications' },
+                }) : null,
+                // The sound of a new vibe becomes "Original audio" others can reuse.
+                (post.status === 'published' && ['reel', 'video'].includes(post.postType) && !post.music?.soundId && !post.duet?.postId)
+                    ? enqueueOriginalAudio(post._id) : null,
             ]);
         },
     };

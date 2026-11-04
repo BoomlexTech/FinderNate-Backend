@@ -250,7 +250,7 @@ export const togglePostPrivacy = asyncHandler(async (req, res) => {
  * PATCH /posts/:postId/interaction-settings   (Phase 2 #18)
  *
  * Lets the author switch likes, comments and sharing on or off for one post or
- * vibe. Body: any of { allowLikes, allowComments, allowShares } as booleans;
+ * vibe. Body: any of { allowLikes, allowComments, allowShares, allowDuets } as booleans;
  * fields left out are unchanged. The switches are enforced by likePost,
  * createComment and the share endpoints, not just hidden in the UI.
  */
@@ -262,14 +262,14 @@ export const updatePostInteractionSettings = asyncHandler(async (req, res) => {
     if (!mongoose.isValidObjectId(postId)) throw new ApiError(404, "Post not found");
 
     const update = {};
-    for (const key of ['allowLikes', 'allowComments', 'allowShares']) {
+    for (const key of ['allowLikes', 'allowComments', 'allowShares', 'allowDuets']) {
         const value = req.body?.[key];
         if (value === undefined) continue;
         if (typeof value !== 'boolean') throw new ApiError(400, `${key} must be true or false`);
         update[`settings.${key}`] = value;
     }
     if (Object.keys(update).length === 0) {
-        throw new ApiError(400, "Send at least one of allowLikes, allowComments or allowShares");
+        throw new ApiError(400, "Send at least one of allowLikes, allowComments, allowShares or allowDuets");
     }
 
     const post = await Post.findById(postId).select('userId').lean();
@@ -296,6 +296,8 @@ export const updatePostInteractionSettings = asyncHandler(async (req, res) => {
     return res.status(200).json(new ApiResponse(200, {
         postId,
         ...interactionSettingsOf(updated),
+        // Phase 5 #49: whether others may make a duet with this video.
+        allowDuets: updated?.settings?.allowDuets !== false,
     }, "Post settings updated"));
 });
 

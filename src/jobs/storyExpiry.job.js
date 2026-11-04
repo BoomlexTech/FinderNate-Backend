@@ -2,13 +2,18 @@ import cron from 'node-cron';
 import Story from '../models/story.models.js';
 import { deleteFromBunny } from '../utils/bunny.js';
 import StoryComment from '../models/storyComment.models.js';
+import StickerResponse from '../models/stickerResponse.models.js';
+import { clearStickerResponses } from '../controllers/storyStickers.controllers.js';
 
 /** Liked or commented on, so worth keeping in the archive (Phase 2 #32). */
 export const hasStoryEngagement = async (story) => {
     if ((story.likedBy?.length || 0) > 0 || (story.commentsCount || 0) > 0) return true;
     // commentsCount is maintained by the comment endpoints; the row check
     // covers a counter that drifted.
-    return !!(await StoryComment.exists({ storyId: story._id }));
+    if (await StoryComment.exists({ storyId: story._id })) return true;
+    // Phase 5 #47: poll votes, quiz answers, slider values and questions are
+    // results the owner wants to read. A countdown reminder alone is not.
+    return !!(await StickerResponse.exists({ storyId: story._id, stickerType: { $ne: 'countdown' } }));
 };
 
 /**
@@ -161,6 +166,7 @@ export const purgeExpiredStories = async ({
                 }
 
                 await Story.deleteOne({ _id: candidate._id });
+                clearStickerResponses(candidate._id);
                 deleted++;
             }
 

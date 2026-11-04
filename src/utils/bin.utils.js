@@ -10,6 +10,8 @@ import Report from '../models/report.models.js';
 import PaymentLink from '../models/paymentLink.models.js';
 import StoryComment from '../models/storyComment.models.js';
 import { deleteMultipleFromBunny } from './bunny.js';
+import { holdOriginalSound, releaseOriginalSound, retireOriginalSound } from '../services/sounds.service.js';
+import { clearStickerResponses } from '../controllers/storyStickers.controllers.js';
 import { cancelBoostsForPost } from './boostServing.js';
 import { getSettingValue } from './appSettings.utils.js';
 import { binPreviewOf, mediaUrlsOf, restoredStoryState } from './bin.rules.js';
@@ -52,6 +54,7 @@ export const moveToBin = async (kind, doc, userId) => {
     if (kind === 'post') {
         await Post.deleteOne({ _id: raw._id });
         await mongoose.model('User').updateOne({ _id: userId }, { $pull: { posts: raw._id } });
+        await holdOriginalSound(raw._id); // Phase 5: its "Original audio" is not offered while it sits in the Bin
     } else {
         await Story.deleteOne({ _id: raw._id });
     }
@@ -64,6 +67,7 @@ export const restoreFromBin = async (item) => {
     if (item.kind === 'post') {
         await Post.collection.insertOne(doc);
         await mongoose.model('User').updateOne({ _id: item.userId }, { $addToSet: { posts: doc._id } });
+        await releaseOriginalSound(doc._id);
     } else {
         Object.assign(doc, restoredStoryState(doc));
         await Story.collection.insertOne(doc);
@@ -86,9 +90,11 @@ export const purgeBinItem = async (item) => {
             Report.deleteMany({ reportedPostId: id }),
             PaymentLink.updateMany({ postId: id, status: 'active' }, { $set: { status: 'cancelled' } }),
             cancelBoostsForPost(id),
+            retireOriginalSound(id),
         ]);
     } else {
         await StoryComment.deleteMany({ storyId: id });
+        await clearStickerResponses(id);
     }
     await BinItem.deleteOne({ _id: item._id });
 };

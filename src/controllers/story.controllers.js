@@ -1,4 +1,12 @@
+import crypto from 'node:crypto';
 import { shapeStoryEngagement } from '../utils/storyEngagement.utils.js';
+import Sound from '../models/sound.models.js';
+import { loadFinishedEdit, markEditUsed } from './edits.controllers.js';
+import { loadUsableSound, musicFieldFrom, bumpSoundUsage } from '../services/sounds.service.js';
+import { attachStickerState } from './storyStickers.controllers.js';
+import {
+    EditValidationError, MUSIC_MAX_SECONDS, parseJsonField, sanitizeStickers, sanitizeMusicChoice, fitMusicWindow,
+} from '../utils/phase5.rules.js';
 import Story from "../models/story.models.js";
 import { ApiResponse } from "../utils/ApiResponse.js";
 import { ApiError } from "../utils/ApiError.js";
@@ -13,64 +21,114 @@ import { POST_MEDIA_LIMITS_MB, tooLargeMessage } from "../constants/uploadLimits
 // 1. Upload Story
 export const uploadStory = asyncHandler(async (req, res) => {
     const userId = req.user._id;
-    if (!req.file) throw new ApiError(400, "Media file is required");
 
-    // A story is an image or a video — mediaType has no other value. The route
-    // uses the shared multer instance, which also accepts audio and documents,
-    // so without this a PDF uploaded by mistake was stored as a ".bin" and
-    // written to the ring as mediaType "image": an unopenable grey box the
-    // author was told had uploaded successfully. Size was unchecked too, so
-    // anything up to multer's 600 MB global ceiling was accepted whatever its
-    // type; the per-type ceilings below are the ones posts and reels use.
-    const mime = req.file.mimetype || '';
-    const isVideo = mime.startsWith('video/');
-    const isImage = mime.startsWith('image/');
-    if (!isImage && !isVideo) {
-        throw new ApiError(400, `File type "${mime}" is not allowed. A story must be an image or a video.`);
+    // Phase 5: a video that went through the editor (#29, #34) arrives as an
+    // editId instead of a file.
+    const edit = await loadFinishedEdit(req.body.editId, userId);
+    if (!req.file && !edit) throw new ApiError(400, "Media file is required");
+
+    // Phase 5 #47: poll, quiz, slider, countdown and question stickers.
+    let stickers;
+    try {
+        stickers = sanitizeStickers(parseJsonField(req.body.stickers, []), { newId: () => `st_${crypto.randomBytes(5).toString('hex')}` });
+    } catch (e) {
+        throw e instanceof EditValidationError ? new ApiError(400, e.message) : e;
     }
 
-    const category = isVideo ? 'video' : 'image';
-    const limitMB = POST_MEDIA_LIMITS_MB[category];
-    if (req.file.size > limitMB * 1024 * 1024) {
-        // 413, matching uploadSingleMedia: a payload-size refusal, not a bad request.
-        throw new ApiError(413, tooLargeMessage({
-            category,
-            actualBytes: req.file.size,
-            limitMB,
-        }));
-    }
+    let mediaUrl;
+    let mediaType;
 
-    const result = await uploadBufferToBunny(req.file.buffer, "stories");
-    if (!result.secure_url) throw new ApiError(500, "Failed to upload story media");
-
-    // Second gate, on what the bytes actually are rather than what the client
-    // called them. uploadBufferToBunny identifies the file from its magic bytes
-    // and names it from that; a buffer it cannot identify — a document sent as
-    // "image/jpeg", a truncated upload — is stored as ".bin" and would become a
-    // story the app can only render as a grey box. Remove it again instead.
-    if (result.format === 'bin' || (result.resource_type !== 'image' && result.resource_type !== 'video')) {
-        try {
-            const { deleteFromBunny } = await import("../utils/bunny.js");
-            await deleteFromBunny(result.secure_url);
-        } catch (error) {
-            console.error('⚠️ Failed to clean up rejected story media:', error.message);
+    if (edit) {
+        mediaUrl = edit.result.url;
+        mediaType = 'video';
+    } else {
+        // A story is an image or a video — mediaType has no other value. The route
+        // uses the shared multer instance, which also accepts audio and documents,
+        // so without this a PDF uploaded by mistake was stored as a ".bin" and
+        // written to the ring as mediaType "image": an unopenable grey box the
+        // author was told had uploaded successfully. Size was unchecked too, so
+        // anything up to multer's 600 MB global ceiling was accepted whatever its
+        // type; the per-type ceilings below are the ones posts and reels use.
+        const mime = req.file.mimetype || '';
+        const isVideo = mime.startsWith('video/');
+        const isImage = mime.startsWith('image/');
+        if (!isImage && !isVideo) {
+            throw new ApiError(400, `File type "${mime}" is not allowed. A story must be an image or a video.`);
         }
-        throw new ApiError(400, "That file could not be read as an image or a video. Try a JPEG, PNG or MP4.");
+
+        const category = isVideo ? 'video' : 'image';
+        const limitMB = POST_MEDIA_LIMITS_MB[category];
+        if (req.file.size > limitMB * 1024 * 1024) {
+            // 413, matching uploadSingleMedia: a payload-size refusal, not a bad request.
+            throw new ApiError(413, tooLargeMessage({
+                category,
+                actualBytes: req.file.size,
+                limitMB,
+            }));
+        }
+
+        const result = await uploadBufferToBunny(req.file.buffer, "stories");
+        if (!result.secure_url) throw new ApiError(500, "Failed to upload story media");
+
+        // Second gate, on what the bytes actually are rather than what the client
+        // called them. uploadBufferToBunny identifies the file from its magic bytes
+        // and names it from that; a buffer it cannot identify — a document sent as
+        // "image/jpeg", a truncated upload — is stored as ".bin" and would become a
+        // story the app can only render as a grey box. Remove it again instead.
+        if (result.format === 'bin' || (result.resource_type !== 'image' && result.resource_type !== 'video')) {
+            try {
+                const { deleteFromBunny } = await import("../utils/bunny.js");
+                await deleteFromBunny(result.secure_url);
+            } catch (error) {
+                console.error('⚠️ Failed to clean up rejected story media:', error.message);
+            }
+            throw new ApiError(400, "That file could not be read as an image or a video. Try a JPEG, PNG or MP4.");
+        }
+        mediaUrl = result.secure_url;
+        mediaType = result.resource_type === "video" ? "video" : "image";
+    }
+
+    // Phase 5 #29: music. A video's song is already mixed in by the editor; a
+    // photo story carries the choice and the app plays it.
+    let music;
+    try {
+        if (edit?.music?.soundId) {
+            const sound = await Sound.findById(edit.music.soundId).lean();
+            if (sound) music = musicFieldFrom(sound, edit.music, { mixed: true });
+        } else if (req.body.music && mediaType === 'image') {
+            const choice = sanitizeMusicChoice(parseJsonField(req.body.music, null), { max: MUSIC_MAX_SECONDS.story });
+            if (choice) {
+                const sound = await loadUsableSound(choice.soundId, userId);
+                music = musicFieldFrom(sound, fitMusicWindow(choice, sound.durationSec), { mixed: false });
+            }
+        } else if (req.body.music && mediaType === 'video') {
+            throw new ApiError(400, 'To add music to a video story, use the video editor first.');
+        }
+    } catch (e) {
+        // Do not leave the file behind when the story is refused over its music.
+        if (!edit) { try { const { deleteFromBunny } = await import("../utils/bunny.js"); await deleteFromBunny(mediaUrl); } catch { /* best effort */ } }
+        throw e;
     }
 
     const story = await Story.create({
         userId,
-        mediaUrl: result.secure_url,
-        mediaType: result.resource_type === "video" ? "video" : "image",
+        mediaUrl,
+        mediaType,
         caption: req.body.caption || "",
+        stickers: stickers.length ? stickers : undefined,
+        music,
         expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000)
     });
+
+    if (music?.soundId) bumpSoundUsage(music.soundId);
+    if (edit) markEditUsed(edit._id, { storyId: story._id });
 
     // Map mediaType to postType, remove mediaType and viewers from response
     const storyObj = story.toObject();
     storyObj.postType = storyObj.mediaType;
     delete storyObj.mediaType;
     delete storyObj.viewers;
+    await attachStickerState([storyObj], userId);
 
     res.status(201).json(new ApiResponse(201, storyObj, "Story uploaded successfully"));
 });
@@ -198,6 +256,8 @@ export const fetchStoriesFeed = asyncHandler(async (req, res) => {
         return obj;
     });
 
+    await attachStickerState(storiesWithPostType, userId);
+
     res.status(200).json(new ApiResponse(200, storiesWithPostType, "Stories feed fetched"));
 });
 // 3. Fetch Stories by user id
@@ -293,6 +353,8 @@ export const fetchStoriesByUser = asyncHandler(async (req, res) => {
         shapeStoryEngagement(obj, viewerId, isOwnStory);
         return obj;
     });
+
+    await attachStickerState(storiesWithPostType, viewerId);
 
     res.status(200).json(new ApiResponse(200, storiesWithPostType, "User's stories fetched"));
 });
@@ -493,6 +555,7 @@ export const fetchArchivedStoriesByUser = asyncHandler(async (req, res) => {
         shapeStoryEngagement(story, viewerId, isOwnStory);
         return story;
     });
+    await attachStickerState(storiesWithPostType, viewerId);
 
     res.status(200).json(new ApiResponse(200, {
         stories: storiesWithPostType,

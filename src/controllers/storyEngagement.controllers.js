@@ -33,7 +33,7 @@ const loadStory = async (storyId) => {
  * way, the author's account is active, and for a private account the two are
  * connected by a follow in either direction.
  */
-const assertCanEngage = async (story, userId) => {
+export const assertCanEngage = async (story, userId) => {
     const ownerId = story.userId;
     if (String(ownerId) === String(userId)) return;
     if (!isStoryLive(story)) throw new ApiError(410, 'This story is no longer available');
