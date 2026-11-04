@@ -348,7 +348,7 @@ export const searchAllContent = async (req, res) => {
         //* business's own hashtags never matched their own posts in search: the
         //* post rendered on the home feed with a clickable "#tag", but that same
         //* tag's search silently filtered the post back out.
-        const finalPosts = await filterBusinessPostsByPaymentPlan(rawPosts);
+        const finalPosts = await filterBusinessPostsByPaymentPlan(rawPosts, req.user?._id);
 
         //* ---- Relevance ----------------------------------------------------
         //*
@@ -522,7 +522,7 @@ export const searchAllContent = async (req, res) => {
                 .lean();
 
             // Filter out unpaid business reels
-            const filteredReels = await filterBusinessPostsByPaymentPlan(rawReels);
+            const filteredReels = await filterBusinessPostsByPaymentPlan(rawReels, req.user?._id);
             
             // Get active payment plan user IDs for reels
             const reelActivePlanUserIdsSet = new Set(activePaymentPlanUserIds.map(b => b.userId.toString()));

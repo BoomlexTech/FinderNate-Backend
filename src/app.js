@@ -260,6 +260,7 @@ import draftRouter from "./routes/draft.routes.js";
 import { metaRouter, emailRouter } from "./routes/meta.routes.js";
 import e2eeRouter from "./routes/e2ee.routes.js";
 import gifRouter from "./routes/gif.routes.js";
+import { kycRouter, adsRouter, listingsRouter, platformPayRouter, growthRouter, seoRouter } from "./routes/phase4.routes.js";
 
 
 
@@ -291,6 +292,12 @@ app.use("/api/v1/orders", orderRouter);
 app.use("/api/v1/bin", binRouter);
 app.use("/api/v1/e2ee", e2eeRouter);
 app.use("/api/v1/gifs", gifRouter);
+app.use("/api/v1/kyc", kycRouter);
+app.use("/api/v1/ads", adsRouter);
+app.use("/api/v1/listings", listingsRouter);
+app.use("/api/v1/platform-payments", platformPayRouter);
+app.use("/api/v1/business-growth", growthRouter);
+app.use("/api/v1/seo", seoRouter);
 app.use("/api/v1/drafts", draftRouter);
 app.use("/api/v1/meta", metaRouter);
 app.use("/api/v1/email", emailRouter);

@@ -102,7 +102,7 @@ export const getExploreFeed = asyncHandler(async (req, res) => {
     const allPosts = [...recentPosts, ...olderBoostedPosts];
 
     // Filter out unpaid business posts
-    const filteredPosts = await filterBusinessPostsByPaymentPlan(allPosts);
+    const filteredPosts = await filterBusinessPostsByPaymentPlan(allPosts, req.user?._id);
 
     // Separate paid business posts and regular posts for interspersing
     const paidBusinessPosts = [];

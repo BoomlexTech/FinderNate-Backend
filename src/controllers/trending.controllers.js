@@ -34,7 +34,7 @@ const loadCards = async (ids, req, limit) => {
         if (!post?.userId || blocked.has(String(post.userId._id))) continue;
         if (await canView(post)) ordered.push(post);
     }
-    const allowed = (await filterBusinessPostsByPaymentPlan(ordered)).slice(0, limit);
+    const allowed = (await filterBusinessPostsByPaymentPlan(ordered, req.user?._id)).slice(0, limit);
     const [likeCounts, likedSet] = await Promise.all([
         batchGetLikesCount(allowed),
         viewerId ? batchIsLikedByUser(viewerId, allowed.map((p) => p._id)) : Promise.resolve(new Set()),

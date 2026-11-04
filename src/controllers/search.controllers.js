@@ -188,7 +188,7 @@ const filterVisibleListings = async (rows, viewerId) => {
     const isOwn = (row) => viewer !== null && String(row.userId?._id || row.userId) === viewer;
 
     const visibleToOthers = new Set(
-        (await filterBusinessPostsByPaymentPlan(rows.filter((row) => !isOwn(row)))).map((row) => String(row._id))
+        (await filterBusinessPostsByPaymentPlan(rows.filter((row) => !isOwn(row)), req.user?._id)).map((row) => String(row._id))
     );
     return rows.filter((row) => isOwn(row) || visibleToOthers.has(String(row._id)));
 };

@@ -126,6 +126,12 @@ const OrderSchema = new mongoose.Schema({
     shippingCharges: { type: Number, default: 0 },
     gstAmount: { type: Number, default: 0 },
     platformFee: { type: Number, default: 0 },
+    // Phase 4 #74: business-to-business orders (both sides verified
+    // businesses) carry a 10% commission; others the normal platform fee.
+    isB2B: { type: Boolean, default: false },
+    commissionRate: { type: Number, default: undefined },
+    commissionAmount: { type: Number, default: undefined },
+    sellerNetAmount: { type: Number, default: undefined },
     sellerAmount: { type: Number, required: true },
     currency: { type: String, default: 'INR' },
     paymentStatus: {
@@ -192,8 +198,23 @@ OrderSchema.pre('save', function(next) {
     next();
 });
 
+// Phase 4 #74: classify new orders as B2B (both sides verified businesses)
+// and record the commission. Best-effort: a lookup failure leaves the order
+// as a normal one rather than blocking the sale.
+OrderSchema.pre('save', async function(next) {
+    if (!this.isNew || this.commissionRate !== undefined) return next();
+    try {
+        const { classifyOrderCommission } = await import('../utils/b2b.utils.js');
+        Object.assign(this, await classifyOrderCommission(this.buyerId, this.sellerId, this.amount));
+    } catch (error) {
+        console.warn('[b2b] commission classification skipped:', error?.message);
+    }
+    next();
+});
+
 OrderSchema.index({ buyerId: 1, createdAt: -1 });
 OrderSchema.index({ sellerId: 1, createdAt: -1 });
+OrderSchema.index({ isB2B: 1, createdAt: -1 });
 OrderSchema.index({ orderStatus: 1 });
 OrderSchema.index({ paymentStatus: 1 });
 // Legacy. No webhook looks orders up by this any more (the Cashfree webhooks use

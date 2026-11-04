@@ -1,4 +1,5 @@
 import { getFeedSignals, rankTimeExpression, excludedObjectIds } from '../utils/feedSignals.utils.js';
+import { filterCommercialPosts } from '../utils/businessVisibility.utils.js';
 import { asyncHandler } from "../utils/asyncHandler.js";
 import Post from "../models/userPost.models.js";
 import { User } from "../models/user.models.js";
@@ -403,11 +404,10 @@ export const getSuggestedReels = asyncHandler(async (req, res) => {
         // Execute aggregation
         let reels = await Post.aggregate(pipeline);
 
-        // console.log('🎬 Reels Debug - Reels found:', reels.length);
-
-        // ✅ NOTE: Business payment plan filtering does NOT apply to reels
-        // Business accounts can post reels freely without needing a paid plan
-        // The payment plan filter ONLY applies to posts and ads
+        // Phase 4 (#74, #78): ordinary vibes are never filtered, but a vibe
+        // that is a product, service or business listing follows the same KYC
+        // and plan rules as posts, and Premium businesses come first.
+        reels = await filterCommercialPosts(reels, currentUserIdRaw, { context: 'feed' });
 
         if (reels.length === 0) {
             // Debug: Check if there are ANY reels in the database

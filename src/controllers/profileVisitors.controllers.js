@@ -28,6 +28,9 @@ export const recordProfileVisit = async (visitorId, profileUserId) => {
             { $set: { lastVisitedAt: new Date() }, $inc: { visitCount: 1 } },
             { upsert: true },
         );
+        // Phase 4 #75: views for verified businesses.
+        const { recordBusinessView } = await import('./businessGrowth.controllers.js');
+        recordBusinessView(profileUserId, 'profile', visitorId);
     } catch { /* a visitor log must never break opening a profile */ }
 };
 

@@ -1,4 +1,6 @@
 import { User } from "../../models/user.models.js";
+import { assertNotLocked } from '../kyc.controllers.js';
+import { lockedFieldsTouched } from '../../utils/phase4.rules.js';
 import Business from "../../models/business.models.js";
 import BusinessRating from "../../models/businessRating.models.js";
 import { ApiError } from "../../utils/ApiError.js";
@@ -406,6 +408,24 @@ export const updateBusinessProfile = asyncHandler(async (req, res) => {
     const business = await Business.findOne({ userId });
     if (!business) {
         throw new ApiError(404, "Business profile not found");
+    }
+
+    // Phase 4 #4: confirmed details are locked until re-verification is paid.
+    // Only fields whose value actually changes count.
+    {
+        const body = req.body || {};
+        const changed = {};
+        for (const f of ['businessName', 'businessType', 'gstNumber']) {
+            if (body[f] !== undefined && String(body[f] ?? '') !== String(business[f] ?? '')) changed[f] = body[f];
+        }
+        if (body.location && typeof body.location === 'object') {
+            const loc = {};
+            for (const f of ['address', 'city', 'state', 'postalCode']) {
+                if (body.location[f] !== undefined && String(body.location[f] ?? '') !== String(business.location?.[f] ?? '')) loc[f] = body.location[f];
+            }
+            if (Object.keys(loc).length) changed.location = loc;
+        }
+        assertNotLocked(business, lockedFieldsTouched(changed));
     }
 
     const {

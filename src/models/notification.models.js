@@ -22,7 +22,9 @@ const NotificationSchema = new mongoose.Schema({
         // Phase 2 adds: story_like, story_comment (#32), repost (#56),
         // collab_invite / collab_accepted (#50), milestone (#46).
         enum: ['like', 'unlike', 'comment', 'follow', 'mention', 'message', 'tag', 'storyView', 'order', 'others', 'business_verification', 'subscription',
-            'story_like', 'story_comment', 'repost', 'collab_invite', 'collab_accepted', 'milestone'],
+            'story_like', 'story_comment', 'repost', 'collab_invite', 'collab_accepted', 'milestone',
+            // Phase 4: KYC (#74), business views (#75), ads (#27), listings (#80), plan expiry (#77).
+            'kyc', 'business_views', 'ad', 'listing', 'plan_expiry'],
         required: true
     },
     message: {

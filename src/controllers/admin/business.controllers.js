@@ -207,6 +207,8 @@ export const verifyBusinessAccount = asyncHandler(async (req, res) => {
         business.verifiedAt = new Date();
         business.verifiedBy = req.admin._id;
         business.subscriptionStatus = 'active';
+        // Phase 4: an admin approval is a KYC pass.
+        business.kyc = { ...(business.kyc?.toObject?.() || business.kyc || {}), status: 'verified', source: 'admin', verifiedAt: new Date(), reviewedBy: req.admin._id, reasons: [] };
 
         if (business.gstNumber && approveGst) {
             business.gstVerified = true;

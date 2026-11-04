@@ -148,3 +148,32 @@ export const acknowledgeSubscription = async ({ subscriptionId, purchaseToken })
         throw error;
     }
 };
+
+
+/**
+ * One-time (consumable) products, used by Phase 4 for ads, the re-KYC fee
+ * and paid listings. purchases.products.get answers with purchaseState
+ * (0 purchased, 1 cancelled, 2 pending), orderId and
+ * obfuscatedExternalAccountId (the userId the app passed).
+ */
+export const getProductPurchase = async (productId, purchaseToken) => {
+    const headers = await authorizedHeaders();
+    const url = `${API_ROOT}/applications/${encodeURIComponent(PLAY_PACKAGE_NAME)}` +
+                `/purchases/products/${encodeURIComponent(productId)}/tokens/${encodeURIComponent(purchaseToken)}`;
+    const { data } = await axios.get(url, { headers, timeout: 15000 });
+    return data;
+};
+
+/** Consumes a one-time purchase so the same product can be bought again. */
+export const consumeProductPurchase = async (productId, purchaseToken) => {
+    const headers = await authorizedHeaders();
+    const url = `${API_ROOT}/applications/${encodeURIComponent(PLAY_PACKAGE_NAME)}` +
+                `/purchases/products/${encodeURIComponent(productId)}/tokens/${encodeURIComponent(purchaseToken)}:consume`;
+    try {
+        await axios.post(url, {}, { headers, timeout: 15000 });
+        return true;
+    } catch (error) {
+        console.warn('[play] consume failed:', error?.response?.data?.error?.message || error?.message);
+        return false;
+    }
+};

@@ -157,8 +157,46 @@ const BusinessSchema = new mongoose.Schema({
     isProfileCompleted: { type: Boolean, default: false },
     // Phase 2 #20: show contact.socialMedia links on the public business
     // profile. On by default; the owner can hide them from Business Settings.
-    showSocialLinks: { type: Boolean, default: true }
+    showSocialLinks: { type: Boolean, default: true },
+
+    // ── Phase 4: business trust ─────────────────────────────────────────────
+    // #79 Registered (GSTIN + business PAN) or unregistered (Aadhaar + PAN).
+    registrationType: { type: String, enum: ['registered', 'unregistered', null], default: null },
+    panNumber: { type: String, uppercase: true, trim: true },
+    // #30, #74 Automatic KYC. `status` drives who sees the business's posts
+    // (utils/phase4.rules.js visibilityTier). Only results and masked numbers
+    // are kept; full Aadhaar numbers are never stored.
+    kyc: {
+        status: { type: String, enum: ['not_started', 'pending', 'needs_review', 'verified', 'rejected', 'recheck_required'], default: undefined },
+        source: { type: String, enum: ['auto', 'admin', 'legacy_admin'], default: undefined },
+        checks: {
+            gst: { valid: Boolean, active: Boolean, legalName: String, tradeName: String, pan: String, checkedAt: Date, refId: String },
+            pan: { valid: Boolean, name: String, pan: String, checkedAt: Date, refId: String },
+            aadhaar: { valid: Boolean, name: String, last4: String, checkedAt: Date, refId: String }
+        },
+        reasons: [String],
+        submittedAt: Date,
+        verifiedAt: Date,
+        reviewedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Admin' },
+        // Q10: businesses approved before Phase 4 must complete the automatic
+        // check by this date once it's available, or their posts are hidden.
+        recheckDueAt: Date,
+        // #74 re-KYC: paid to unlock confirmed details for changes.
+        reKycPaidAt: Date
+    },
+    // #4 Email confirmation of the business details, then locked.
+    detailsConfirmation: {
+        status: { type: String, enum: ['none', 'sent', 'confirmed', 'rejected'], default: 'none' },
+        sentAt: Date,
+        respondedAt: Date,
+        snapshot: mongoose.Schema.Types.Mixed
+    },
+    detailsLocked: { type: Boolean, default: false },
+    // Stored copy of the computed visibility tier, for search and the admin panel.
+    visibilityTier: { type: String, enum: ['hidden', 'network', 'public', 'premium'], default: undefined, index: true }
 }, { timestamps: true });
+
+BusinessSchema.index({ 'kyc.status': 1, updatedAt: -1 });
 
 // 🚀 Auto-verify business when subscription becomes active
 BusinessSchema.pre('save', async function (next) {

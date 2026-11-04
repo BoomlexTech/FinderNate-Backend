@@ -131,7 +131,15 @@ export const bulkCheckActivePaymentPlans = async (userIds) => {
 
 /** Post content that counts as selling, and so needs an active plan. */
 const COMMERCIAL_CONTENT_TYPES = new Set(['product', 'service', 'business']);
-export const filterBusinessPostsByPaymentPlan = async (posts) => {
+export const filterBusinessPostsByPaymentPlan = async (posts, viewerId = null) => {
+    // Phase 4 (#74, #78, #80): KYC and plan decide who sees commercial posts;
+    // Premium authors come first. KYC_VISIBILITY_MODE=legacy restores the old
+    // rule below.
+    const { getSettingValue } = await import('./appSettings.utils.js');
+    if ((await getSettingValue('KYC_VISIBILITY_MODE', 'enforce')) !== 'legacy') {
+        const { filterCommercialPosts } = await import('./businessVisibility.utils.js');
+        return filterCommercialPosts(posts, viewerId, { context: 'discovery' });
+    }
     try {
         if (!posts || posts.length === 0) return [];
         

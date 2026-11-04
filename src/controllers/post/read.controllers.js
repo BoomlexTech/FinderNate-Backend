@@ -1,4 +1,5 @@
 import { authorOrCollabFilter, attachCollaborators } from '../../utils/collab.utils.js';
+import { canViewCommercialPost, filterCommercialPosts } from '../../utils/businessVisibility.utils.js';
 import { annotateSeen } from '../../utils/seenFlags.utils.js';
 import mongoose from 'mongoose';
 import { asyncHandler } from "../../utils/asyncHandler.js";
@@ -173,6 +174,12 @@ export const getPostById = asyncHandler(async (req, res) => {
     // private by the `privacy` field alone.
     if (!filterPostsByAccountPrivacy([post], currentUser, viewerFollowing, viewerFollowers).length) {
         throw new ApiError(403, "This account is private. Follow to see their posts.");
+    }
+
+    // Phase 4 (#74): a business listing is only shown to the people its
+    // KYC and plan allow.
+    if (!(await canViewCommercialPost(post, currentUser?._id))) {
+        throw new ApiError(403, "This listing isn't available right now.");
     }
 
     const postAuthorId = post.userId?._id || post.userId;
@@ -499,7 +506,8 @@ export const getUserProfilePosts = asyncHandler(async (req, res) => {
                 }
             }
         } else {
-            postsAfterBusinessFilter = visiblePosts;
+            // Someone else's profile: listings follow KYC and plan (Phase 4 #74).
+            postsAfterBusinessFilter = await filterCommercialPosts(visiblePosts, req.user?._id, { context: 'feed', keepOrder: true });
         }
 
         const totalPosts = await Post.countDocuments(filter);

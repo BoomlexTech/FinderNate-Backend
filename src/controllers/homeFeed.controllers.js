@@ -19,6 +19,7 @@ import { batchIsLikedByUser, batchGetLikedByUsers, batchGetLikesCount, batchGetC
 import { getFollowingIdSet, getPendingFollowRequestIdSet } from '../utils/followEngagement.utils.js';
 import { getFeedSignals, rankTimeExpression, excludedObjectIds } from '../utils/feedSignals.utils.js';
 import { annotateSeen } from '../utils/seenFlags.utils.js';
+import { filterCommercialPosts } from '../utils/businessVisibility.utils.js';
 import { attachCollaborators } from '../utils/collab.utils.js';
 import {
     feedBoostSlotCount,
@@ -466,7 +467,9 @@ export const getHomeFeed = asyncHandler(async (req, res) => {
             }
         ];
 
-        const posts = await Post.aggregate(aggregationPipeline);
+        // Phase 4 (#74, #78, #80): commercial posts follow KYC and plan
+        // rules; Premium businesses' posts come first.
+        const posts = await filterCommercialPosts(await Post.aggregate(aggregationPipeline), userId, { context: 'feed' });
 
 
         if (posts.length === 0) {

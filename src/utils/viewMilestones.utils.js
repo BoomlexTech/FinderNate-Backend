@@ -32,6 +32,9 @@ export const recordUniqueViews = async (postIds, viewerId) => {
         const listings = await Post.find({ _id: { $in: ids }, userId: { $ne: viewerId }, contentType: { $in: LISTING_TYPES } })
             .select('userId engagement.views +viewMilestones').lean();
         if (!listings.length) return;
+        // Phase 4 #75: business-post views for verified businesses.
+        const { recordBusinessView } = await import('../controllers/businessGrowth.controllers.js');
+        for (const post of listings) recordBusinessView(post.userId, 'post', viewerId);
         const thresholds = await getSettingValue('VIEW_MILESTONES', DEFAULT_VIEW_MILESTONES);
         for (const post of listings) {
             const due = milestonesToAnnounce(post.engagement?.views || 0, thresholds, post.viewMilestones);

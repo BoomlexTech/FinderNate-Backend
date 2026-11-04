@@ -1,4 +1,8 @@
 import { Router } from "express";
+import { adminKycQueue, adminKycDecision } from "../controllers/kyc.controllers.js";
+import { adminListAds, adminRejectAd } from "../controllers/ads.controllers.js";
+import { adminListings, adminListingDecision } from "../controllers/listings.controllers.js";
+import { adminB2bStatements } from "../controllers/businessGrowth.controllers.js";
 import {
     // Authentication
     adminLogin,
@@ -287,5 +291,14 @@ router.route("/monitoring/test-expiry-job").post(requirePermission('systemSettin
 // ===============================
 router.route("/chats/debug").get(requirePermission('manageUsers'), debugUserChats);
 router.route("/chats/cleanup").post(requirePermission('manageUsers'), cleanupProblematicChats);
+
+// ── Phase 4: KYC queue (#30), ads (#27), listings (#80), B2B (#74) ──
+router.get("/kyc", requirePermission('manageBusiness'), adminKycQueue);
+router.post("/kyc/:businessId/decision", requirePermission('manageBusiness'), adminKycDecision);
+router.get("/ads", requirePermission('manageBusiness'), adminListAds);
+router.post("/ads/:id/reject", requirePermission('manageBusiness'), adminRejectAd);
+router.get("/listings", requirePermission('manageBusiness'), adminListings);
+router.post("/listings/:id/decision", requirePermission('manageBusiness'), adminListingDecision);
+router.get("/b2b/statements", requirePermission('viewAnalytics'), adminB2bStatements);
 
 export default router;

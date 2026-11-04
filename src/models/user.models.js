@@ -31,6 +31,18 @@ const UserSchema = new mongoose.Schema({
     // Phase 2 #65: hide my visits from the people I look at. Reciprocal: an
     // account that hides its visits can't see its own visitors either.
     profileVisitsHidden: { type: Boolean, default: false },
+    // Phase 4 #80: Aadhaar check for regular users who list a product. Only
+    // the result and the last 4 digits are kept.
+    aadhaarVerification: {
+        status: { type: String, enum: ['none', 'verified', 'failed'], default: 'none' },
+        name: String,
+        last4: String,
+        refId: String,
+        verifiedAt: Date
+    },
+    // Phase 4 #77: plan for regular users (no ads). A 30-day pass.
+    plusUntil: { type: Date, default: null },
+    plusRemindersSent: { type: [Number], default: [] },
     // Phase 2 #26: content categories this user wants more of (max 10).
     preferredCategories: { type: [String], default: undefined },
     // Phase 2 #10: email per category. 'digest' = one daily summary; 'off' = none.
