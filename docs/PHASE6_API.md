@@ -66,6 +66,10 @@ No server change. The share routes `POST /share/post/:postId/generate`, `POST /s
 
 No server change. A sticker is saved as a fraction of the box it was placed in (`x`, `y` from 0 to 1). The composers now place stickers in a box with the same shape as the one the viewer draws a story in, and show the picture the way the viewer does, so a sticker lands on the same part of the picture.
 
+## In-app camera and live duet (#61, #78)
+
+No server change. The app's camera records the clip, and the clip then goes through the same calls as before: `POST /edits` for a vibe, and `POST /edits/duet` with the original post for a duet (see `PHASE5_API.md`). For a duet the original plays beside your own camera while you record, in the layout you picked, placed the way the server joins the two (`side_by_side`, `top_bottom`, `reaction`), so what you see while recording is what comes out. A duet is as long as the shorter of the two videos, up to 60 seconds.
+
 ## Stickers and price tags in the app's video editor (#37)
 
 No server change. The editor already sends text layers as pictures (`overlays` in the edit list, see `PHASE5_API.md`). Stickers and price tags are drawn the same way, so the server places them like any other layer.
