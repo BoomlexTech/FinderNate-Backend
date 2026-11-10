@@ -462,6 +462,8 @@ export const getHomeFeed = asyncHandler(async (req, res) => {
                     music: 1,
                     duet: 1,
                     'settings.allowDuets': 1,
+                    // Phase 6 #72: the poll (question, answers, end time); counts come from /posts/polls/batch.
+                    poll: 1,
                     // Include customization fields (product, service, business, normal)
                     'customization.product': 1,
                     'customization.service': 1,

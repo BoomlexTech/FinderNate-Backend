@@ -6,6 +6,7 @@ import Like from '../models/like.models.js';
 import Comment from '../models/comment.models.js';
 import SavedPost from '../models/savedPost.models.js';
 import PostInteraction from '../models/postInteraction.models.js';
+import PostPollVote from '../models/postPollVote.models.js';
 import Report from '../models/report.models.js';
 import PaymentLink from '../models/paymentLink.models.js';
 import StoryComment from '../models/storyComment.models.js';
@@ -87,6 +88,7 @@ export const purgeBinItem = async (item) => {
             Comment.deleteMany({ postId: id }),
             SavedPost.deleteMany({ postId: id }),
             PostInteraction.deleteMany({ postId: id }),
+            PostPollVote.deleteMany({ postId: id }),
             Report.deleteMany({ reportedPostId: id }),
             PaymentLink.updateMany({ postId: id, status: 'active' }, { $set: { status: 'cancelled' } }),
             cancelBoostsForPost(id),

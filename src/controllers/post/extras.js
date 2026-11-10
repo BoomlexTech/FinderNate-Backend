@@ -11,6 +11,7 @@ import Sound from '../../models/sound.models.js';
 import { loadUsableSound, musicFieldFrom, bumpSoundUsage } from '../../services/sounds.service.js';
 import { enqueueOriginalAudio } from '../../queues/creatorQueue.js';
 import { sanitizeMusicChoice, fitMusicWindow, parseJsonField, MUSIC_MAX_SECONDS } from '../../utils/phase5.rules.js';
+import { sanitizePoll, PollValidationError } from '../../utils/poll.rules.js';
 
 const isValidId = (id) => mongoose.Types.ObjectId.isValid(id);
 
@@ -89,6 +90,22 @@ export const buildPostExtras = async (body = {}, userId, { explicitMentions = []
         }
     }
     if (subcategories !== undefined) fields.subcategories = subcategories;
+
+    // Phase 6 #72: a poll under the post. A scheduled post's poll starts running
+    // when the post goes live, not when it was written.
+    try {
+        const scheduled = body.scheduledAt ? new Date(body.scheduledAt) : null;
+        const startsAt = scheduled && !Number.isNaN(scheduled.getTime()) && scheduled.getTime() > Date.now() ? scheduled : new Date();
+        const poll = sanitizePoll(body.poll, { now: startsAt });
+        if (poll) {
+            if (body.postType === 'story') throw new PollValidationError('Add a poll to a story with the poll sticker.');
+            if (isVibe) throw new PollValidationError('Polls can go on photos, text posts, products and services, not on vibes.');
+            fields.poll = poll;
+        }
+    } catch (e) {
+        throw e instanceof PollValidationError ? new ApiError(400, e.message) : e;
+    }
+
     if (collaboratorIds.length) {
         fields.collaborators = collaboratorIds.map((id) => ({ userId: id, status: 'pending', invitedAt: new Date() }));
     }

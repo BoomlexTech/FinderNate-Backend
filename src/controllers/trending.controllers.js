@@ -12,7 +12,7 @@ import { annotateSeen } from '../utils/seenFlags.utils.js';
 import { attachCollaborators } from '../utils/collab.utils.js';
 import { cityKey, discountOf, cleanTagQuery } from '../utils/suggestions.utils.js';
 
-const CARD_FIELDS = 'userId postType contentType caption description media category hashtags createdAt engagement settings.privacy settings.allowLikes settings.allowComments settings.allowShares customization.product customization.service.name customization.service.price customization.service.currency customization.business.businessName collaborators music duet settings.allowDuets';
+const CARD_FIELDS = 'userId postType contentType caption description media category hashtags createdAt engagement settings.privacy settings.allowLikes settings.allowComments settings.allowShares customization.product customization.service.name customization.service.price customization.service.currency customization.business.businessName collaborators music duet settings.allowDuets poll';
 
 /**
  * Load posts by id for a discovery surface, in that order, minus anything

@@ -377,6 +377,15 @@ export const DuetSchema = new mongoose.Schema({
     layout: String
 }, { _id: false });
 
+// 📊 Poll under a post (Phase 6 #72). Written once when the post is created and
+// never edited: changing the answers under people who already voted would make
+// the results meaningless. Votes live in PostPollVote (index into `options`).
+export const PollSchema = new mongoose.Schema({
+    question: { type: String, required: true },
+    options: { type: [String], required: true },
+    endsAt: { type: Date, required: true }
+}, { _id: false });
+
 // 📬 Post Schema
 const PostSchema = new mongoose.Schema({
     userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
@@ -411,6 +420,8 @@ const PostSchema = new mongoose.Schema({
     // Phase 5
     music: { type: MusicSchema, default: undefined },
     duet: { type: DuetSchema, default: undefined },
+    // Phase 6 #72
+    poll: { type: PollSchema, default: undefined },
     // Phase 2 #46: view thresholds the owner has already been told about.
     viewMilestones: { type: [Number], default: undefined, select: false },
     media: [MediaSchema],

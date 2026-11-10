@@ -720,6 +720,7 @@ export const deleteBusinessProfile = asyncHandler(async (req, res) => {
     const { default: Comment } = await import("../../models/comment.models.js");
     const { default: SavedPost } = await import("../../models/savedPost.models.js");
     const { default: PostInteraction } = await import("../../models/postInteraction.models.js");
+    const { default: PostPollVote } = await import("../../models/postPollVote.models.js");
     const { default: Report } = await import("../../models/report.models.js");
     const { deleteMultipleFromBunny } = await import("../../utils/bunny.js");
 
@@ -764,6 +765,7 @@ export const deleteBusinessProfile = asyncHandler(async (req, res) => {
             Comment.deleteMany({ postId: { $in: postIds } }),
             SavedPost.deleteMany({ postId: { $in: postIds } }),
             PostInteraction.deleteMany({ postId: { $in: postIds } }),
+            PostPollVote.deleteMany({ postId: { $in: postIds } }),
             Report.deleteMany({ reportedPostId: { $in: postIds } }),
             Post.db.model('User').updateMany(
                 { posts: { $in: postIds } },

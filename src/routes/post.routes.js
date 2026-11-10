@@ -27,6 +27,7 @@ import { pinComment, unpinComment } from "../controllers/comment.controllers.js"
 import { markNotInterested, undoNotInterested } from "../controllers/discovery.controllers.js";
 import { listCollections, createCollection, renameCollection, deleteCollection, addToCollection, removeFromCollection } from "../controllers/collections.controllers.js";
 import { inviteCollaborator, removeCollaborator, acceptCollab, declineCollab, listCollabInvites } from "../controllers/collab.controllers.js";
+import { votePoll, getPoll, getPollsBatch } from "../controllers/postPoll.controllers.js";
 import { getHomeFeed } from "../controllers/homeFeed.controllers.js";
 import { likePost, unlikePost, likeComment, unlikeComment, getLikedByUsers } from "../controllers/like.controllers.js";
 import { createComment, getCommentsByPost, getCommentById, updateComment, deleteComment } from "../controllers/comment.controllers.js";
@@ -162,6 +163,12 @@ router.route("/:postId/collaborators").post(verifyJWT, inviteCollaborator);
 router.route("/:postId/collaborators/:userId").delete(verifyJWT, removeCollaborator);
 router.route("/:postId/collab/accept").post(verifyJWT, acceptCollab);
 router.route("/:postId/collab/decline").post(verifyJWT, declineCollab);
+
+// Phase 6 #72: polls on posts. The batch route has two fixed segments, so it
+// cannot be mistaken for a /:postId route.
+router.route("/polls/batch").post(optionalVerifyJWT, getPollsBatch);
+router.route("/:postId/poll").get(optionalVerifyJWT, getPoll);
+router.route("/:postId/poll/vote").post(verifyJWT, votePoll);
 
 // Online store — public, no auth required (must be before /:postId catch-all)
 router.route("/online-store/products").get(getOnlineStoreProducts);

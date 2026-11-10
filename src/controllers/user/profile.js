@@ -17,6 +17,7 @@ import Draft from "../../models/draft.models.js";
 import SavedPost from "../../models/savedPost.models.js";
 import SearchHistory from "../../models/searchHistory.models.js";
 import PostInteraction from "../../models/postInteraction.models.js";
+import PostPollVote from "../../models/postPollVote.models.js";
 import Subscription from "../../models/subscription.models.js";
 import PushSubscription from "../../models/pushSubscription.models.js";
 import Chat from "../../models/chat.models.js";
@@ -560,6 +561,9 @@ const deleteAccount = asyncHandler(async (req, res) => {
         Post.updateMany({ mentions: userId }, { $pull: { mentions: userId } }),
         Like.deleteMany({ postId: { $in: user.posts || [] } }),
         Comment.deleteMany({ postId: { $in: user.posts || [] } }),
+        // Phase 6 #72: votes on this user's polls, and the votes they cast on others'.
+        PostPollVote.deleteMany({ postId: { $in: user.posts || [] } }),
+        PostPollVote.deleteMany({ userId }),
         Follower.deleteMany({ userId }),
         Follower.deleteMany({ followerId: userId }),
         Following.deleteMany({ userId }),

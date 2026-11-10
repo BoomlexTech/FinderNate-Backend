@@ -5,6 +5,7 @@ import Comment from "../../models/comment.models.js";
 import Like from "../../models/like.models.js";
 import SavedPost from "../../models/savedPost.models.js";
 import PostInteraction from "../../models/postInteraction.models.js";
+import PostPollVote from "../../models/postPollVote.models.js";
 import { User } from "../../models/user.models.js";
 import { invalidateAuthCache } from "../../middlewares/auth.middleware.js";
 import { deleteFromBunny, deleteMultipleFromBunny } from "../../utils/bunny.js";
@@ -152,6 +153,7 @@ const takeDownPost = async (post) => {
         Comment.deleteMany({ postId: post._id }),
         SavedPost.deleteMany({ postId: post._id }),
         PostInteraction.deleteMany({ postId: post._id }),
+        PostPollVote.deleteMany({ postId: post._id }),
     ]);
 
     await invalidatePostCaches(post._id.toString(), post.userId);
