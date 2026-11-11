@@ -184,9 +184,13 @@ export const batchTrackInteractions = asyncHandler(async (req, res) => {
                         filter: { userId, postId, interactionType },
                         update: [
                             {
+                                // Pipeline-style updates are NOT cast by Mongoose, so a
+                                // plain string here was stored as a string. History and
+                                // every $lookup on this collection match postId against
+                                // an ObjectId, so those rows were invisible to them.
                                 $set: {
-                                    userId: userId,
-                                    postId: postId,
+                                    userId: new mongoose.Types.ObjectId(String(userId)),
+                                    postId: new mongoose.Types.ObjectId(String(postId)),
                                     interactionType: interactionType,
                                     lastInteracted: new Date(),
                                     interactionCount: { $add: [{ $ifNull: ["$interactionCount", 0] }, 1] },
