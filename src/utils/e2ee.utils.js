@@ -4,6 +4,17 @@ import { ApiError } from './ApiError.js';
 import { normalizeEnvelope, missingDevices, pruneEnvelopeKeys } from './e2ee.rules.js';
 import { postSystemMessage } from './chatSystem.utils.js';
 
+/**
+ * Master switch for end-to-end encryption. OFF unless E2EE_ENABLED=true.
+ *
+ * Chats are plain text for the beta launch. Clients start encrypting a
+ * one-to-one chat only when the key lookup says both people have a device, so
+ * with this off the lookup reports nobody as ready and every client (including
+ * older app versions) sends ordinary messages. Nothing is deleted: set
+ * E2EE_ENABLED=true to turn it back on.
+ */
+export const e2eeEnabled = () => String(process.env.E2EE_ENABLED || '').toLowerCase() === 'true';
+
 /** Active (not revoked) devices of these users, public keys included. */
 export const activeDevicesOf = async (userIds) =>
     E2eeDevice.find({ userId: { $in: userIds }, revokedAt: null })
@@ -17,6 +28,11 @@ export const activeDevicesOf = async (userIds) =>
  * envelope misses a device, so the sender can fetch keys and try again.
  */
 export const prepareEncryptedMessage = async (chat, senderId, rawEnvelope) => {
+    if (!e2eeEnabled()) {
+        // A client that cached keys before the switch went off. It re-checks the
+        // key lookup on its next start (or within minutes) and sends plain text.
+        throw new ApiError(400, 'Encryption is turned off. Please send the message again.');
+    }
     if (chat.chatType !== 'direct') {
         throw new ApiError(400, 'End-to-end encryption is available in one-to-one chats for now');
     }

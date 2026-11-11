@@ -7,7 +7,7 @@ import { asyncHandler } from '../utils/asyncHandler.js';
 import { uploadBufferToBunny } from '../utils/bunny.js';
 import { CHAT_MEDIA_LIMITS_MB } from '../constants/uploadLimits.js';
 import { validateDeviceKeys, validateBackup, MAX_DEVICES_PER_USER } from '../utils/e2ee.rules.js';
-import { activeDevicesOf, publicDevice } from '../utils/e2ee.utils.js';
+import { activeDevicesOf, publicDevice, e2eeEnabled } from '../utils/e2ee.utils.js';
 import { getBlockedParticipantIds } from './chat/helpers.js';
 import socketManager from '../config/socket.js';
 
@@ -95,6 +95,9 @@ export const getE2eeKeys = asyncHandler(async (req, res) => {
 
     const users = {};
     for (const id of ids) users[id] = { enabled: false, devices: [] };
+    // Encryption is off for the beta: nobody is reported as ready, so clients
+    // send plain text. See e2eeEnabled().
+    if (!e2eeEnabled()) return res.status(200).json(new ApiResponse(200, { users }, 'OK'));
     for (const d of devices) {
         const k = String(d.userId);
         users[k].devices.push(publicDevice(d));

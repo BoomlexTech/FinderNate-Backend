@@ -14,7 +14,7 @@ import { calculateMessageStatus } from '../../utils/messageStatus.utils.js';
 import { safeEmitToChat, assertNotBlockedInChat, isChatMutedFor } from './helpers.js';
 import { buildSharedPostSnapshot, sharedPostSummary, recordPostShare } from '../../utils/sharedPost.utils.js';
 import { notExpiredFilter, redactViewOnce, expiryFor, viewOnceAllowed, parseBool, previewLabel, joinedAtOf, VIEW_ONCE_UNOPENED_TTL_MS } from '../../utils/chatRoles.rules.js';
-import { prepareEncryptedMessage, markChatEncrypted } from '../../utils/e2ee.utils.js';
+import { prepareEncryptedMessage, markChatEncrypted, e2eeEnabled } from '../../utils/e2ee.utils.js';
 import { lookupGif } from '../../services/giphy.service.js';
 import { getPushTargets, sendFcmToTargets } from '../../services/pushTargets.service.js';
 
@@ -182,7 +182,7 @@ export const getChatMessages = asyncHandler(async (req, res) => {
         new ApiResponse(200, {
             messages: messagesWithStatus.reverse(),
             disappearingSeconds: Number(chat.disappearing?.seconds) || 0,
-            e2ee: !!chat.e2ee?.enabled,
+            e2ee: e2eeEnabled() && !!chat.e2ee?.enabled,
             chatType: chat.chatType,
             participantIds: chat.participants.map(p => p.toString()),
             pagination: {
