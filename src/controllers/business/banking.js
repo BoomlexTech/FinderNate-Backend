@@ -3,6 +3,7 @@ import Business from "../../models/business.models.js";
 import { ApiError } from "../../utils/ApiError.js";
 import { ApiResponse } from "../../utils/ApiResponse.js";
 import { asyncHandler } from "../../utils/asyncHandler.js";
+import { checkIfscOnSave } from "../../utils/ifsc.utils.js";
 
 // The account number is never returned in full to the seller — only the admin
 // payout view reads it raw, because that is the person who has to type it into
@@ -85,6 +86,18 @@ export const addOrUpdateBankDetails = asyncHandler(async (req, res) => {
         throw new ApiError(400, "Account number is required");
     }
 
+    // Is this a real branch code? Checked with Cashfree when the IFSC is new or
+    // changed. A code that does not exist is refused here, because payouts are
+    // manual and a wrong IFSC means the admin cannot pay the seller. If Cashfree
+    // cannot answer (no credentials, no balance, down) the details save as before.
+    const ifscCheck = await checkIfscOnSave({
+        ifsc: ifscCode,
+        previousIfsc: business.bankDetails?.ifscCode
+    });
+    if (ifscCheck.checked && !ifscCheck.valid) {
+        throw new ApiError(400, ifscCheck.message || "This IFSC code is not valid");
+    }
+
     let paymentQRCodeUrl = business.bankDetails?.paymentQRCode;
     if (req.file) {
         const { uploadBufferToBunny } = await import('../../utils/bunny.js');
@@ -114,7 +127,10 @@ export const addOrUpdateBankDetails = asyncHandler(async (req, res) => {
         ifscCode: ifscCode.toUpperCase(),
         accountType: accountType.toLowerCase(),
         upiId: upiId ? upiId.toLowerCase() : business.bankDetails?.upiId,
-        branchName: branchName ? branchName.trim() : business.bankDetails?.branchName,
+        // The seller's own branch name wins; the verified one fills it in when empty.
+        branchName: branchName
+            ? branchName.trim()
+            : (business.bankDetails?.branchName || (ifscCheck.valid ? ifscCheck.branch : undefined)),
         paymentQRCode: paymentQRCodeUrl,
         isVerified: false,
         verifiedAt: null,

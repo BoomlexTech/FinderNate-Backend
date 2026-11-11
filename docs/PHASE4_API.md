@@ -150,7 +150,18 @@ Approving a business through the old `verifyBusinessAccount` also sets its KYC t
 
 ## Environment
 
-`CASHFREE_VERIFY_CLIENT_ID`, `CASHFREE_VERIFY_CLIENT_SECRET`, `CASHFREE_VERIFY_ENV` (sandbox or production) are the Cashfree Verification Suite credentials. Without them every submission goes to the admin queue, and Aadhaar checks answer 503.
+`CASHFREE_VERIFY_CLIENT_ID`, `CASHFREE_VERIFY_CLIENT_SECRET`, `CASHFREE_VERIFY_ENV` (sandbox or production) are the Cashfree Verification Suite (Secure ID) credentials. Without them every submission goes to the admin queue, and Aadhaar checks answer 503. Set them in the server's environment (Coolify), never in the repository. `production` credentials need `CASHFREE_VERIFY_ENV=production`; Cashfree also requires the server's public IP to be whitelisted for Secure ID.
+
+### IFSC check on bank details
+
+`POST /business/bank-details` now checks the IFSC code with Cashfree (IFSC Verification V2, `POST /verification/ifsc`) when the code is new or changed. Editing other details (UPI id, branch name) does not look it up again, so no verification credit is spent.
+
+- **The code does not exist:** the request is refused with 400 and "We could not find this IFSC code. Check it and try again."
+- **The branch name is empty:** it is filled in from the verified branch.
+- **Cashfree cannot answer** (no credentials, wrong key, IP not whitelisted, no balance, rate limit, outage, timeout): the details save as before with the format check only. A seller is never blocked by this.
+- IFSCs of some cooperative and rural banks carry letters in the last six characters, which Cashfree's own format check rejects. For those a 400 from Cashfree is treated as "could not check", not "invalid".
+
+The lookup is `verifyIfsc` in `src/services/cashfreeVerify.service.js`, and the save rule is in `src/utils/ifsc.utils.js`.
 
 ## Jobs
 
