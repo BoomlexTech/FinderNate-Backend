@@ -4,13 +4,13 @@ import { ApiError } from '../utils/ApiError.js';
 import { ApiResponse } from '../utils/ApiResponse.js';
 import Post from '../models/userPost.models.js';
 import { User } from '../models/user.models.js';
-import { getTrendingTopics, getTrendingPlaceIds } from '../services/trending.service.js';
+import { getTrendingTopics, getTrendingPlaceIds, getCitiesWithTrending } from '../services/trending.service.js';
 import { createPostVisibilityChecker } from './post/visibility.js';
 import { filterBusinessPostsByPaymentPlan } from '../utils/businessPlan.utils.js';
 import { batchGetLikesCount, batchIsLikedByUser } from '../utils/postEngagement.utils.js';
 import { annotateSeen } from '../utils/seenFlags.utils.js';
 import { attachCollaborators } from '../utils/collab.utils.js';
-import { cityKey, discountOf, cleanTagQuery } from '../utils/suggestions.utils.js';
+import { cityKey, discountOf, cleanTagQuery, matchCities } from '../utils/suggestions.utils.js';
 
 const CARD_FIELDS = 'userId postType contentType caption description media category hashtags createdAt engagement settings.privacy settings.allowLikes settings.allowComments settings.allowShares customization.product customization.service.name customization.service.price customization.service.currency customization.business.businessName collaborators music duet settings.allowDuets poll';
 
@@ -106,4 +106,16 @@ export const getTrendingNearYou = asyncHandler(async (req, res) => {
         deals,
         updatedAt: pick?.updatedAt || null,
     }, useLocal ? `Trending in ${label}` : 'Trending on Findernate'));
+});
+
+/**
+ * GET /explore/cities?q=pu — city suggestions while someone types in "Choose
+ * city". Cities that have posts come first, then major Indian cities. Open to
+ * signed-out visitors, like the rest of discovery.
+ */
+export const searchCities = asyncHandler(async (req, res) => {
+    const limit = Math.min(15, Math.max(1, parseInt(req.query.limit, 10) || 8));
+    const withPosts = await getCitiesWithTrending();
+    const cities = matchCities(String(req.query.q ?? '').slice(0, 60), withPosts, limit);
+    return res.status(200).json(new ApiResponse(200, { cities }, 'City suggestions'));
 });

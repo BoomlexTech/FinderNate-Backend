@@ -14,6 +14,8 @@ import { cityKey, discountOf, trendingScore } from '../utils/suggestions.utils.j
 const HOUR = 60 * 60 * 1000;
 export const TOPICS_KEY = 'fn:trending:topics';
 export const placeKey = (city) => `fn:trending:place:${city || '_all'}`;
+/** Cities that currently have trending data, for the "Choose city" suggestions. */
+export const CITIES_KEY = 'fn:trending:cities';
 const TOPICS_TTL = 2 * 60 * 60;
 const PLACE_TTL = 6 * 60 * 60;
 const PER_PLACE = 30;
@@ -97,6 +99,7 @@ export const computeTrendingPlaces = async () => {
     }
 
     let written = 0;
+    const writtenCities = [];
     const pipeline = redisClient.pipeline();
     for (const [city, lists] of byCity) {
         if (city !== '_all' && lists.trending.length < MIN_CITY_POSTS) continue;
@@ -107,7 +110,9 @@ export const computeTrendingPlaces = async () => {
             updatedAt: new Date().toISOString(),
         }), 'EX', PLACE_TTL);
         written += 1;
+        if (city !== '_all') writtenCities.push(city);
     }
+    pipeline.set(CITIES_KEY, JSON.stringify(writtenCities), 'EX', PLACE_TTL);
     try { await pipeline.exec(); } catch { /* next run retries */ }
     return { cities: written - 1 };
 };
@@ -128,4 +133,12 @@ export const getTrendingPlaceIds = async (city) => {
         if (city) local = await read(placeKey(city));
     }
     return { local, all };
+};
+
+/** City keys (lower-case) that have enough posts to show trending. */
+export const getCitiesWithTrending = async () => {
+    try {
+        const raw = await redisClient.get(CITIES_KEY);
+        return raw ? JSON.parse(raw) : [];
+    } catch { return []; }
 };

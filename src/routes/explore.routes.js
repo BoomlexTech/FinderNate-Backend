@@ -1,6 +1,6 @@
 import express from "express";
 import { getExploreFeed } from "../controllers/explore.controllers.js";
-import { getTrendingTopicsHandler, getHashtagPosts, getTrendingNearYou } from "../controllers/trending.controllers.js";
+import { getTrendingTopicsHandler, getHashtagPosts, getTrendingNearYou, searchCities } from "../controllers/trending.controllers.js";
 import { optionalVerifyJWT } from "../middlewares/auth.middleware.js";
 import { getBlockedUsers as getBlockedUsersMiddleware } from "../middlewares/blocking.middleware.js";
 
@@ -21,5 +21,7 @@ router.route("/").get(optionalVerifyJWT, getBlockedUsersMiddleware, getExploreFe
 router.get("/trending-topics", getTrendingTopicsHandler);
 router.get("/hashtag/:tag", optionalVerifyJWT, getBlockedUsersMiddleware, getHashtagPosts);
 router.get("/trending-near-you", optionalVerifyJWT, getBlockedUsersMiddleware, getTrendingNearYou);
+// City suggestions for "Choose city" while typing
+router.get("/cities", searchCities);
 
 export default router;

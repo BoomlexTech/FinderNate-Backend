@@ -73,3 +73,50 @@ export const discountOf = (product) => {
  */
 export const trendingScore = ({ likes = 0, comments = 0, shares = 0, saves = 0, views = 0 }, ageHours) =>
     (likes + 2 * comments + 3 * shares + saves + views / 20 + 1) / Math.pow(Math.max(0, ageHours) + 2, 1.2);
+
+/**
+ * Cities offered while someone types in "Choose city". Major Indian cities, so
+ * the box is useful before any post carries a location; cities that do have
+ * posts (see matchCities' `withPosts`) are listed ahead of these.
+ */
+export const COMMON_CITIES = [
+    'Mumbai', 'Delhi', 'Bengaluru', 'Hyderabad', 'Ahmedabad', 'Chennai', 'Kolkata', 'Pune', 'Jaipur', 'Surat',
+    'Lucknow', 'Kanpur', 'Nagpur', 'Indore', 'Thane', 'Bhopal', 'Visakhapatnam', 'Patna', 'Vadodara', 'Ghaziabad',
+    'Ludhiana', 'Agra', 'Nashik', 'Faridabad', 'Meerut', 'Rajkot', 'Varanasi', 'Srinagar', 'Aurangabad', 'Dhanbad',
+    'Amritsar', 'Navi Mumbai', 'Allahabad', 'Ranchi', 'Howrah', 'Coimbatore', 'Jabalpur', 'Gwalior', 'Vijayawada', 'Jodhpur',
+    'Madurai', 'Raipur', 'Kota', 'Guwahati', 'Chandigarh', 'Solapur', 'Hubli', 'Mysuru', 'Tiruchirappalli', 'Bareilly',
+    'Aligarh', 'Tiruppur', 'Moradabad', 'Jalandhar', 'Bhubaneswar', 'Salem', 'Warangal', 'Guntur', 'Bhiwandi', 'Saharanpur',
+    'Gorakhpur', 'Bikaner', 'Amravati', 'Noida', 'Jamshedpur', 'Bhilai', 'Cuttack', 'Firozabad', 'Kochi', 'Thiruvananthapuram',
+    'Dehradun', 'Durgapur', 'Asansol', 'Nanded', 'Kolhapur', 'Ajmer', 'Gulbarga', 'Jamnagar', 'Ujjain', 'Siliguri',
+    'Mangaluru', 'Belagavi', 'Tirunelveli', 'Gurugram', 'Udaipur', 'Vellore', 'Erode', 'Thrissur', 'Kozhikode', 'Puducherry',
+    'Shimla', 'Panaji', 'Dharwad', 'Davangere', 'Shivamogga', 'Tumakuru', 'Dharmapuri', 'Hosur', 'Kambainallur',
+];
+
+const normalizeCity = (s) => String(s ?? '').toLowerCase().replace(/\s+/g, ' ').trim();
+const titleCity = (s) => String(s).replace(/\b\p{L}/gu, (c) => c.toUpperCase());
+
+/**
+ * Cities matching what the user has typed so far, best first: cities that have
+ * posts, then names that start with the text, then names with a word that does,
+ * then names containing it. Pure. `withPosts` are city keys (lower-case).
+ */
+export const matchCities = (query, withPosts = [], limit = 8) => {
+    const q = normalizeCity(query);
+    if (q.length < 1) return [];
+    const have = new Set(withPosts.map(normalizeCity));
+    const seen = new Set();
+    const pool = [];
+    for (const name of [...withPosts.map(titleCity), ...COMMON_CITIES]) {
+        const key = normalizeCity(name);
+        if (!key || seen.has(key)) continue;
+        seen.add(key);
+        pool.push({ name: titleCity(name), key, hasPosts: have.has(key) });
+    }
+    const tier = (c) => (c.key.startsWith(q) ? 0 : c.key.split(' ').some((w) => w.startsWith(q)) ? 1 : c.key.includes(q) ? 2 : 9);
+    return pool
+        .map((c) => ({ c, t: tier(c) }))
+        .filter((x) => x.t < 9)
+        .sort((a, b) => a.t - b.t || Number(b.c.hasPosts) - Number(a.c.hasPosts) || a.c.name.localeCompare(b.c.name))
+        .slice(0, Math.max(1, limit))
+        .map((x) => ({ name: x.c.name, hasPosts: x.c.hasPosts }));
+};
