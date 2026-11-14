@@ -11,6 +11,7 @@ import { redisClient } from '../config/redis.config.js';
 import { notifyActivity } from '../utils/activityNotify.utils.js';
 import { AD_TYPES, adPrice, adStatusAt, istDay, pickAds, validateAdCta } from '../utils/phase4.rules.js';
 import { gstPercent, playProducts } from './platformPayments.controllers.js';
+import { withProtocol } from '../utils/socialLinks.utils.js';
 
 /**
  * Paid ads (Phase 4 #27). ₹100/day by default (AD_DAILY_FEE), plus GST,
@@ -49,9 +50,10 @@ const cleanCta = (c = {}) => ({
     label: String(c.label || '').slice(0, 24) || undefined,
     whatsapp: c.whatsapp ? String(c.whatsapp).replace(/[^\d+]/g, '') : undefined,
     phone: c.phone ? String(c.phone).replace(/[^\d+]/g, '') : undefined,
-    url: c.url ? String(c.url).trim() : undefined,
-    playStoreUrl: c.playStoreUrl ? String(c.playStoreUrl).trim() : undefined,
-    appStoreUrl: c.appStoreUrl ? String(c.appStoreUrl).trim() : undefined,
+    // "mysite.com" is accepted and saved as "https://mysite.com".
+    url: c.url ? withProtocol(String(c.url)) || undefined : undefined,
+    playStoreUrl: c.playStoreUrl ? withProtocol(String(c.playStoreUrl)) || undefined : undefined,
+    appStoreUrl: c.appStoreUrl ? withProtocol(String(c.appStoreUrl)) || undefined : undefined,
 });
 
 /** POST /ads  { type, postId?, creative?, cta, days, startAt? } → draft with price. */

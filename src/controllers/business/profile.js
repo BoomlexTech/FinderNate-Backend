@@ -1,5 +1,5 @@
 import { User } from "../../models/user.models.js";
-import { assertNotLocked } from '../kyc.controllers.js';
+import { assertNotLocked, maybeSendDetailsConfirmation, confirmationRecipient, maskEmail } from '../kyc.controllers.js';
 import { lockedFieldsTouched } from '../../utils/phase4.rules.js';
 import Business from "../../models/business.models.js";
 import BusinessRating from "../../models/businessRating.models.js";
@@ -10,7 +10,18 @@ import { getCoordinates } from "../../utils/getCoordinates.js";
 import mongoose from "mongoose";
 import { BUSINESS_CATEGORIES, extractTagsFromText } from "./helpers.js";
 import { cancelBoostsForPost } from "../../utils/boostServing.js";
-import { normalizeSocialLinks } from "../../utils/socialLinks.utils.js";
+import { normalizeSocialLinks, withProtocol, isWebLink } from "../../utils/socialLinks.utils.js";
+
+// Adds https:// to the website fields when the person typed "mysite.com", so the
+// form no longer fails with "Invalid website URL" for an ordinary address.
+const normaliseWebsiteFields = (body) => {
+    if (!body || typeof body !== 'object') return;
+    if (typeof body.website === 'string') body.website = withProtocol(body.website);
+    if (body.contact && typeof body.contact === 'object' && typeof body.contact.website === 'string') {
+        body.contact.website = withProtocol(body.contact.website);
+    }
+};
+const WEBSITE_ERROR = "The website doesn't look like a web address (example: mybusiness.com)";
 
 // Canonical forms of the two statutory identity numbers: GSTIN is 15 uppercase
 // alphanumerics, Aadhaar is 12 digits, and neither contains a space.
@@ -25,6 +36,16 @@ import { normalizeSocialLinks } from "../../utils/socialLinks.utils.js";
 const normaliseGst = (value) => String(value ?? '').replace(/\s+/g, '').toUpperCase();
 const normaliseAadhaar = (value) => String(value ?? '').replace(/\s+/g, '');
 
+// Client spec #4: once business details are submitted, the mandatory fields
+// are emailed to the owner to confirm or reject. Sent in the background so a
+// slow mail server never holds up saving; the reply says where it is going.
+const queueDetailsConfirmation = async (business) => {
+    if (!business || business.detailsLocked) return null;
+    const to = await confirmationRecipient(business).catch(() => null);
+    maybeSendDetailsConfirmation(business).catch((err) => console.warn('[business] confirmation email:', err?.message));
+    return to ? { to: maskEmail(to), message: `We have emailed your business details to ${maskEmail(to)}. Please confirm or reject them from that email.` } : null;
+};
+
 // POST /api/v1/business/create
 export const createBusinessProfile = asyncHandler(async (req, res) => {
     const userId = req.user._id;
@@ -38,6 +59,7 @@ export const createBusinessProfile = asyncHandler(async (req, res) => {
         throw new ApiError(409, "Business profile already exists. Please use the update endpoint to modify your business details.");
     }
 
+    normaliseWebsiteFields(req.body);
     const {
         businessName,
         businessType,
@@ -74,11 +96,11 @@ export const createBusinessProfile = asyncHandler(async (req, res) => {
         }
     }
 
-    if (website && !/^https?:\/\/.+/.test(website)) {
-        throw new ApiError(400, "Invalid website URL");
+    if (website && !isWebLink(website)) {
+        throw new ApiError(400, WEBSITE_ERROR);
     }
-    if (contact && contact.website && !/^https?:\/\/.+/.test(contact.website)) {
-        throw new ApiError(400, "Invalid contact.website URL");
+    if (contact && contact.website && !isWebLink(contact.website)) {
+        throw new ApiError(400, WEBSITE_ERROR);
     }
     if (contact && contact.socialMedia !== undefined) {
         contact.socialMedia = normalizeSocialLinks(contact.socialMedia);
@@ -241,11 +263,14 @@ export const createBusinessProfile = asyncHandler(async (req, res) => {
         await user.save();
     }
 
+    const confirmationEmail = await queueDetailsConfirmation(business);
+
     return res.status(existingBusiness ? 200 : 201).json(
         new ApiResponse(existingBusiness ? 200 : 201, {
             business,
             businessId: business._id,
-            planSelectionRequired: true
+            planSelectionRequired: true,
+            confirmationEmail
         }, "Business profile created successfully. You can now update your business details using the update endpoint.")
     );
 });
@@ -428,6 +453,7 @@ export const updateBusinessProfile = asyncHandler(async (req, res) => {
         assertNotLocked(business, lockedFieldsTouched(changed));
     }
 
+    normaliseWebsiteFields(req.body);
     const {
         businessName,
         businessType,
@@ -622,8 +648,8 @@ export const updateBusinessProfile = asyncHandler(async (req, res) => {
             }
         }
 
-        if (contact.website && !/^https?:\/\/.+/.test(contact.website)) {
-            throw new ApiError(400, "Invalid contact.website URL");
+        if (contact.website && !isWebLink(contact.website)) {
+            throw new ApiError(400, WEBSITE_ERROR);
         }
 
         if (contact.socialMedia !== undefined) {
@@ -634,8 +660,8 @@ export const updateBusinessProfile = asyncHandler(async (req, res) => {
     }
 
     if (website) {
-        if (!/^https?:\/\/.+/.test(website)) {
-            throw new ApiError(400, "Invalid website URL");
+        if (!isWebLink(website)) {
+            throw new ApiError(400, WEBSITE_ERROR);
         }
         business.website = website;
     }
@@ -664,11 +690,13 @@ export const updateBusinessProfile = asyncHandler(async (req, res) => {
 
     await business.save();
 
+    const confirmationEmail = await queueDetailsConfirmation(business);
+
     const businessObj = business.toObject();
     delete businessObj.rating;
 
     return res.status(200).json(
-        new ApiResponse(200, { business: businessObj }, "Business profile updated successfully")
+        new ApiResponse(200, { business: businessObj, confirmationEmail }, "Business profile updated successfully")
     );
 });
 

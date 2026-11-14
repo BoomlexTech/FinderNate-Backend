@@ -3,6 +3,7 @@ import { verifyJWT, optionalVerifyJWT } from '../middlewares/auth.middleware.js'
 import {
     getBusinessKyc, submitBusinessKyc, businessAadhaarOtp, businessAadhaarVerify,
     userAadhaarOtp, userAadhaarVerify, getMyKyc, resendDetailsConfirmation, confirmDetailsFromEmail, getTrustInfo,
+    getDetailsConfirmation,
 } from '../controllers/kyc.controllers.js';
 import { getAdConfig, createAd, myAds, getAd, cancelAd, serveAds, adImpression, adClick } from '../controllers/ads.controllers.js';
 import { listingConfig, createListing, myListings, cancelListing } from '../controllers/listings.controllers.js';
@@ -22,6 +23,7 @@ kycRouter.post('/business', submitBusinessKyc);
 kycRouter.post('/business/aadhaar/otp', businessAadhaarOtp);
 kycRouter.post('/business/aadhaar/verify', businessAadhaarVerify);
 kycRouter.post('/business/send-confirmation', resendDetailsConfirmation);
+kycRouter.get('/business/details-confirmation', getDetailsConfirmation);
 kycRouter.get('/me', getMyKyc);
 kycRouter.post('/me/aadhaar/otp', userAadhaarOtp);
 kycRouter.post('/me/aadhaar/verify', userAadhaarVerify);
