@@ -8,7 +8,6 @@ import Follower from "../models/follower.models.js";
 import mongoose from "mongoose";
 import { addBadgesToUsers } from "../utils/userBadge.utils.js";
 import { redisClient } from "../config/redis.config.js";
-import Business from "../models/business.models.js";
 import Post from "../models/userPost.models.js";
 
 /* ------------------------- dismissed suggestions (#5) ------------------------ */
@@ -92,10 +91,16 @@ const getRecentPosters = async () => {
 
 /**
  * The accounts out of `ids` that may be suggested, in the same order: active,
- * not blocked or excluded, and — for businesses — not hidden by the KYC rules
- * (#87). Business accounts used to be left out entirely, and since most
- * active accounts are businesses the strip on the home feed came back empty
- * (client feedback: "Follow suggestions not completed").
+ * not deleted, not blocked or excluded. Business accounts used to be left out
+ * entirely, and since most active accounts are businesses the strip on the
+ * home feed came back empty (client feedback: "Follow suggestions not
+ * completed").
+ *
+ * Businesses whose KYC is not verified are suggested too. The KYC tier (#87)
+ * only decides who sees their product, service and business posts (see
+ * businessVisibility.utils.js); their account and ordinary posts are public.
+ * Leaving them out removed almost every real account (live check, 14 Nov:
+ * 2 suggestions out of 17 accounts).
  */
 const eligibleInOrder = async (ids, excludeIds = []) => {
     const exclude = new Set(excludeIds.map(String));
@@ -108,13 +113,10 @@ const eligibleInOrder = async (ids, excludeIds = []) => {
         wanted.push(new mongoose.Types.ObjectId(key));
     }
     if (wanted.length === 0) return [];
-    const users = await User.find({ _id: { $in: wanted }, accountStatus: 'active' })
+    // accountStatus null: accounts created before the field existed.
+    const users = await User.find({ _id: { $in: wanted }, accountStatus: { $in: ['active', null] }, isDeleted: { $ne: true } })
         .select('username fullName profileImageUrl bio isBusinessProfile');
-    const businessIds = users.filter((u) => u.isBusinessProfile).map((u) => u._id);
-    const hidden = businessIds.length
-        ? new Set((await Business.find({ userId: { $in: businessIds }, visibilityTier: 'hidden' }).select('userId').lean()).map((b) => String(b.userId)))
-        : new Set();
-    const byId = new Map(users.filter((u) => !hidden.has(String(u._id))).map((u) => [String(u._id), u]));
+    const byId = new Map(users.map((u) => [String(u._id), u]));
     return wanted.map((id) => byId.get(String(id))).filter(Boolean);
 };
 
