@@ -50,7 +50,8 @@ export const normalizeSubcategories = (value) => {
 export const ASPECTS = Object.freeze({
     portrait: { key: '4:5', width: 1080, height: 1350 },
     square: { key: '1:1', width: 1080, height: 1080 },
-    landscape: { key: '1.91:1', width: 1080, height: 566 },
+    // 1080×608 is the size in the client's spec for the wide format.
+    landscape: { key: '1.91:1', width: 1080, height: 608 },
     vertical: { key: '9:16', width: 1080, height: 1920 },
 });
 export const SUPPORTED_ASPECT_KEYS = ['4:5', '1:1', '1.91:1', '9:16'];

@@ -125,7 +125,7 @@ describe('#20 business social links', () => {
     });
 
     test('rejects non-http links, non-lists and too many links', () => {
-        assert.throws(() => normalizeSocialLinks([{ platform: 'facebook', url: 'javascript:alert(1)' }]), /must start with http/);
+        assert.throws(() => normalizeSocialLinks([{ platform: 'facebook', url: 'javascript:alert(1)' }]), /doesn't look like a web address/);
         assert.throws(() => normalizeSocialLinks('https://x.com'), /must be a list/);
         const many = Array.from({ length: SOCIAL_LINK_LIMIT + 1 }, (_, i) => ({ platform: 'web', url: `https://a.com/${i}` }));
         assert.throws(() => normalizeSocialLinks(many), /up to 10/);
