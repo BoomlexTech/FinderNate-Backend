@@ -287,11 +287,18 @@ export const sendDetailsConfirmation = async (business) => {
  */
 export const maybeSendDetailsConfirmation = async (business) => {
     if (!business || business.detailsLocked) return { sent: false, reason: 'locked' };
-    const prev = business.detailsConfirmation;
-    if (prev?.status === 'sent' && sameSnapshot(prev.snapshot, snapshotOf(business))) {
-        return { sent: false, reason: 'already_sent' };
-    }
+    if (detailsAlreadyEmailed(business)) return { sent: false, reason: 'already_sent' };
     return sendDetailsConfirmation(business);
+};
+
+/**
+ * True when the last confirmation email holds exactly the current details and
+ * is still waiting for an answer, so saving again sends nothing (for example
+ * after changing only the website, which the email does not list).
+ */
+export const detailsAlreadyEmailed = (business) => {
+    const prev = business?.detailsConfirmation;
+    return prev?.status === 'sent' && sameSnapshot(prev.snapshot, snapshotOf(business));
 };
 
 /** POST /kyc/business/send-confirmation — (re)send the email. */

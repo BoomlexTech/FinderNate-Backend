@@ -1,5 +1,5 @@
 import { User } from "../../models/user.models.js";
-import { assertNotLocked, maybeSendDetailsConfirmation, confirmationRecipient, maskEmail } from '../kyc.controllers.js';
+import { assertNotLocked, maybeSendDetailsConfirmation, detailsAlreadyEmailed, confirmationRecipient, maskEmail } from '../kyc.controllers.js';
 import { lockedFieldsTouched } from '../../utils/phase4.rules.js';
 import Business from "../../models/business.models.js";
 import BusinessRating from "../../models/businessRating.models.js";
@@ -41,6 +41,9 @@ const normaliseAadhaar = (value) => String(value ?? '').replace(/\s+/g, '');
 // slow mail server never holds up saving; the reply says where it is going.
 const queueDetailsConfirmation = async (business) => {
     if (!business || business.detailsLocked) return null;
+    // Nothing new to confirm: no email goes out, so don't say one did
+    // (seen live on 14 Nov after changing only the website).
+    if (detailsAlreadyEmailed(business)) return null;
     const to = await confirmationRecipient(business).catch(() => null);
     maybeSendDetailsConfirmation(business).catch((err) => console.warn('[business] confirmation email:', err?.message));
     return to ? { to: maskEmail(to), message: `We have emailed your business details to ${maskEmail(to)}. Please confirm or reject them from that email.` } : null;
