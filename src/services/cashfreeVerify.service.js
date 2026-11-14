@@ -134,25 +134,62 @@ export const verifyIfsc = async (ifsc) => {
     }
 };
 
+/**
+ * Turns Cashfree / UIDAI answers into sentences a person can act on. The raw
+ * messages ("verification_failed", "Invalid ref id", HTTP 5xx) were shown as
+ * they were, or as a bare server error (client feedback #74).
+ */
+export const aadhaarMessage = (status, data, fallback) => {
+    const raw = `${data?.code || ''} ${data?.message || ''}`.toLowerCase();
+    if (/expired|timed? ?out/.test(raw)) return 'This OTP has expired. Tap "Resend OTP" to get a new one.';
+    if (/invalid otp|incorrect otp|otp.*(invalid|incorrect|wrong|mismatch)/.test(raw)) return 'The OTP is not correct. Check the SMS and try again.';
+    if (/ref.?id/.test(raw)) return 'This OTP request is no longer valid. Tap "Resend OTP" to get a new one.';
+    if (/(wait|too many|frequent|rate|45 sec|retry after)/.test(raw) || status === 429) return 'Please wait a minute before asking for another OTP.';
+    if (/not linked|no mobile|mobile.*not/.test(raw)) return 'No mobile number is linked to this Aadhaar. Link one at an Aadhaar centre, then try again.';
+    if (/invalid aadhaar|aadhaar.*(invalid|not valid|does not exist)/.test(raw)) return 'This Aadhaar number is not valid. Check it and try again.';
+    if (status === 401 || status === 403) return 'Aadhaar verification is not available right now. Please try again later.';
+    if (status === 422 || /balance|insufficient/.test(raw)) return 'Aadhaar verification is not available right now. Please try again later.';
+    return data?.message || fallback;
+};
+
+const busy = { available: true, ok: false, valid: false, message: 'The Aadhaar service is busy right now. Please try again in a minute.' };
+
 /** Sends an OTP to the mobile number linked to the Aadhaar. */
 export const sendAadhaarOtp = async (aadhaarNumber) => {
     if (!verificationConfigured()) return { available: false };
     const digits = String(aadhaarNumber || '').replace(/\D/g, '');
     if (!/^\d{12}$/.test(digits)) return { available: true, ok: false, message: 'Enter the 12-digit Aadhaar number' };
-    const d = await call('/offline-aadhaar/otp', { aadhaar_number: digits });
-    const refId = String(pick(d, 'ref_id', 'reference_id') || '');
-    return { available: true, ok: !!refId, refId, last4: digits.slice(-4), message: pick(d, 'message') };
+    try {
+        const { status, data } = await callWithStatus('/offline-aadhaar/otp', { aadhaar_number: digits });
+        const refId = String(pick(data, 'ref_id', 'reference_id') || '');
+        if (status === 200 && refId) return { available: true, ok: true, refId, last4: digits.slice(-4), message: pick(data, 'message') };
+        console.warn(`[cashfree aadhaar otp] HTTP ${status} ${data?.code || ''} ${data?.message || ''}`);
+        return { available: true, ok: false, message: aadhaarMessage(status, data, "We couldn't send the OTP. Please try again.") };
+    } catch (err) {
+        console.warn(`[cashfree aadhaar otp] ${err?.code || err?.message || 'request failed'}`);
+        return busy;
+    }
 };
 
 /** Checks the OTP and returns the name on the Aadhaar. */
 export const verifyAadhaarOtp = async (refId, otp) => {
     if (!verificationConfigured()) return { available: false };
-    const d = await call('/offline-aadhaar/verify', { ref_id: String(refId), otp: String(otp) });
-    return {
-        available: true,
-        valid: /^valid$/i.test(String(d.status || '')) || d.valid === true,
-        name: pick(d, 'name'),
-        refId: String(pick(d, 'ref_id', 'reference_id') || refId),
-        message: pick(d, 'message'),
-    };
+    const code = String(otp || '').replace(/\D/g, '');
+    if (!/^\d{6}$/.test(code)) return { available: true, valid: false, message: 'Enter the 6-digit OTP from the SMS' };
+    if (!refId) return { available: true, valid: false, message: 'Tap "Send OTP" first.' };
+    try {
+        const { status, data } = await callWithStatus('/offline-aadhaar/verify', { ref_id: String(refId), otp: code });
+        const valid = status === 200 && (/^valid$/i.test(String(data.status || '')) || data.valid === true);
+        if (!valid) console.warn(`[cashfree aadhaar verify] HTTP ${status} ${data?.code || ''} ${data?.status || ''} ${data?.message || ''}`);
+        return {
+            available: true,
+            valid,
+            name: pick(data, 'name'),
+            refId: String(pick(data, 'ref_id', 'reference_id') || refId),
+            message: valid ? pick(data, 'message') : aadhaarMessage(status, data, 'The OTP is not correct. Check the SMS and try again.'),
+        };
+    } catch (err) {
+        console.warn(`[cashfree aadhaar verify] ${err?.code || err?.message || 'request failed'}`);
+        return busy;
+    }
 };
