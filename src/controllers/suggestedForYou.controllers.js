@@ -8,6 +8,8 @@ import Follower from "../models/follower.models.js";
 import mongoose from "mongoose";
 import { addBadgesToUsers } from "../utils/userBadge.utils.js";
 import { redisClient } from "../config/redis.config.js";
+import Business from "../models/business.models.js";
+import Post from "../models/userPost.models.js";
 
 /* ------------------------- dismissed suggestions (#5) ------------------------ */
 
@@ -70,6 +72,76 @@ const getPopularRanking = async () => {
     return ranked;
 };
 
+// Accounts that posted recently: the last resort when nobody has followers
+// yet (a young platform), so the "Follow suggestions" strip is never empty.
+const RECENT_POSTERS_TTL_MS = 5 * 60 * 1000;
+const _recentPosters = { data: null, expiry: 0 };
+const getRecentPosters = async () => {
+    if (_recentPosters.data && Date.now() < _recentPosters.expiry) return _recentPosters.data;
+    const rows = await Post.aggregate([
+        { $sort: { createdAt: -1 } },
+        { $limit: 1000 },
+        { $group: { _id: "$userId", last: { $max: "$createdAt" } } },
+        { $sort: { last: -1 } },
+        { $limit: 200 },
+    ]);
+    _recentPosters.data = rows.map((r) => r._id).filter(Boolean);
+    _recentPosters.expiry = Date.now() + RECENT_POSTERS_TTL_MS;
+    return _recentPosters.data;
+};
+
+/**
+ * The accounts out of `ids` that may be suggested, in the same order: active,
+ * not blocked or excluded, and — for businesses — not hidden by the KYC rules
+ * (#87). Business accounts used to be left out entirely, and since most
+ * active accounts are businesses the strip on the home feed came back empty
+ * (client feedback: "Follow suggestions not completed").
+ */
+const eligibleInOrder = async (ids, excludeIds = []) => {
+    const exclude = new Set(excludeIds.map(String));
+    const wanted = [];
+    const seen = new Set();
+    for (const id of ids) {
+        const key = String(id);
+        if (!mongoose.isValidObjectId(key) || exclude.has(key) || seen.has(key)) continue;
+        seen.add(key);
+        wanted.push(new mongoose.Types.ObjectId(key));
+    }
+    if (wanted.length === 0) return [];
+    const users = await User.find({ _id: { $in: wanted }, accountStatus: 'active' })
+        .select('username fullName profileImageUrl bio isBusinessProfile');
+    const businessIds = users.filter((u) => u.isBusinessProfile).map((u) => u._id);
+    const hidden = businessIds.length
+        ? new Set((await Business.find({ userId: { $in: businessIds }, visibilityTier: 'hidden' }).select('userId').lean()).map((b) => String(b.userId)))
+        : new Set();
+    const byId = new Map(users.filter((u) => !hidden.has(String(u._id))).map((u) => [String(u._id), u]));
+    return wanted.map((id) => byId.get(String(id))).filter(Boolean);
+};
+
+/** Follower / following counts and badges for one page of users. */
+const describeUsers = async (pageUsers, reasons = new Map()) => {
+    const ids = pageUsers.map((u) => u._id);
+    const [followersCounts, followingCounts] = await Promise.all([
+        Follower.aggregate([{ $match: { userId: { $in: ids } } }, { $group: { _id: "$userId", count: { $sum: 1 } } }]),
+        Follower.aggregate([{ $match: { followerId: { $in: ids } } }, { $group: { _id: "$followerId", count: { $sum: 1 } } }]),
+    ]);
+    const followersMap = new Map(followersCounts.map((f) => [f._id.toString(), f.count]));
+    const followingMap = new Map(followingCounts.map((f) => [f._id.toString(), f.count]));
+    const details = pageUsers.map((user) => ({
+        _id: user._id,
+        username: user.username,
+        fullName: user.fullName,
+        profileImageUrl: user.profileImageUrl,
+        bio: user.bio,
+        isBusinessProfile: user.isBusinessProfile,
+        followersCount: followersMap.get(user._id.toString()) || 0,
+        followingCount: followingMap.get(user._id.toString()) || 0,
+        isFollowing: false,
+        reason: reasons.get(user._id.toString()) || null,
+    }));
+    return addBadgesToUsers(details);
+};
+
 /**
  * Signed-out visitors get the accounts most people follow.
  *
@@ -96,43 +168,19 @@ const sendPopularSuggestions = async (req, res, { excludeIds = [] } = {}) => {
     const rankedIds = ranked.map(r => r._id);
     const countById = new Map(ranked.map(r => [r._id.toString(), r.count]));
 
-    // Same eligibility rules the personalised path applies at its own final
-    // lookup — active, not a business profile, not blocked.
-    const eligible = await User.find({
-        // excludeIds: for a signed-in caller, themself, who they already follow
-        // and who they dismissed (#5).
-        _id: { $in: rankedIds, $nin: [...blockedUsers, ...excludeIds] },
-        accountStatus: 'active',
-        isBusinessProfile: { $ne: true },
-    }).select('username fullName profileImageUrl bio isBusinessProfile');
-
-    // Re-impose the popularity order: $in returns documents in natural order,
-    // not the order of the array handed to it.
-    eligible.sort((a, b) =>
-        (countById.get(b._id.toString()) || 0) - (countById.get(a._id.toString()) || 0));
+    // Most followed first, then accounts that posted recently, so a young
+    // platform with few follows still has someone to suggest. excludeIds: for
+    // a signed-in caller, themself, who they already follow and who they
+    // dismissed (#5).
+    const recent = await getRecentPosters();
+    const eligible = await eligibleInOrder(
+        [...rankedIds, ...recent],
+        [...blockedUsers, ...excludeIds],
+    );
 
     const pageUsers = eligible.slice(skip, skip + limit);
-
-    const followingCounts = await Follower.aggregate([
-        { $match: { followerId: { $in: pageUsers.map(u => u._id) } } },
-        { $group: { _id: "$followerId", count: { $sum: 1 } } },
-    ]);
-    const followingMap = new Map(followingCounts.map(f => [f._id.toString(), f.count]));
-
-    const details = pageUsers.map(user => ({
-        _id: user._id,
-        username: user.username,
-        fullName: user.fullName,
-        profileImageUrl: user.profileImageUrl,
-        bio: user.bio,
-        isBusinessProfile: user.isBusinessProfile,
-        followersCount: countById.get(user._id.toString()) || 0,
-        followingCount: followingMap.get(user._id.toString()) || 0,
-        // Nobody is signed in, so nobody is followed by them.
-        isFollowing: false,
-    }));
-
-    const withBadges = await addBadgesToUsers(details);
+    const reasons = new Map(pageUsers.map((u) => [u._id.toString(), countById.has(u._id.toString()) ? 'Popular on Findernate' : 'New on Findernate']));
+    const withBadges = await describeUsers(pageUsers, reasons);
 
     return res.status(200).json(
         new ApiResponse(200, {
@@ -294,82 +342,37 @@ const getSuggestedForYou = asyncHandler(async (req, res) => {
         const dismissedIds = await getDismissedIds(currentUserId);
         for (const id of dismissedIds) suggestionMap.delete(id);
 
-        // Nothing personal to suggest yet (a new account with no likes,
-        // comments or follows): fall back to popular accounts rather than an
-        // empty row, minus everyone they already follow or dismissed.
-        if (suggestionMap.size === 0) {
-            return sendPopularSuggestions(req, res, {
-                excludeIds: [
-                    new mongoose.Types.ObjectId(currentUserId),
-                    ...followingIds,
-                    ...dismissedIds.filter((id) => mongoose.isValidObjectId(id)).map((id) => new mongoose.Types.ObjectId(id)),
-                ],
-            });
-        }
+        // Ranked personal picks first (likes, comments, mutual friends), then
+        // popular accounts and recent posters to fill the row. Before, the
+        // personal picks were filtered down to non-business accounts with no
+        // top-up, which usually left nothing at all.
+        const personal = Array.from(suggestionMap.values()).sort((a, b) => b.score - a.score);
+        const reasons = new Map(personal.map((sug) => [sug.userId.toString(), sug.reason]));
+        const exclude = [
+            String(currentUserId),
+            ...followingIds.map(String),
+            ...dismissedIds,
+            ...blockedUsers.map(String),
+        ];
+        const [ranked, recent] = await Promise.all([getPopularRanking(), getRecentPosters()]);
+        for (const r of ranked) if (!reasons.has(r._id.toString())) reasons.set(r._id.toString(), 'Popular on Findernate');
+        const eligible = await eligibleInOrder(
+            [...personal.map((sug) => sug.userId), ...ranked.map((r) => r._id), ...recent],
+            exclude,
+        );
 
-        // Sort by score, then paginate, then shuffle the page batch
-        let suggestions = Array.from(suggestionMap.values()).sort((a, b) => b.score - a.score);
-        const paginated = suggestions.slice(skip, skip + limit);
-        shuffleArray(paginated);
+        const pageUsers = eligible.slice(skip, skip + limit);
+        for (const u of pageUsers) if (!reasons.has(u._id.toString())) reasons.set(u._id.toString(), 'New on Findernate');
+        const suggestionsWithBadges = await describeUsers(pageUsers, reasons);
 
-        const userIds = paginated.map(s => s.userId);
-
-        // Fetch users with selected fields (excluding blocked users)
-        const users = await User.find({
-            _id: {
-                $in: userIds,
-                $ne: currentUserId,
-                $nin: blockedUsers
-            },
-            accountStatus: 'active',
-            isBusinessProfile: { $ne: true }
-        }).select('username fullName profileImageUrl bio isBusinessProfile');
-
-        // Get follower/following counts
-        const [followersCounts, followingCounts] = await Promise.all([
-            Follower.aggregate([
-                { $match: { userId: { $in: userIds } } },
-                { $group: { _id: "$userId", count: { $sum: 1 } } }
-            ]),
-            Follower.aggregate([
-                { $match: { followerId: { $in: userIds } } },
-                { $group: { _id: "$followerId", count: { $sum: 1 } } }
-            ])
-        ]);
-
-        const followersMap = new Map(followersCounts.map(f => [f._id.toString(), f.count]));
-        const followingMap = new Map(followingCounts.map(f => [f._id.toString(), f.count]));
-
-        // Final mapping
-        const suggestionsWithDetails = paginated.map(suggestion => {
-            const user = users.find(u => u._id.toString() === suggestion.userId.toString());
-            if (!user) return null;
-
-            return {
-                _id: user._id,
-                username: user.username,
-                fullName: user.fullName,
-                profileImageUrl: user.profileImageUrl,
-                bio: user.bio,
-                isBusinessProfile: user.isBusinessProfile,
-                followersCount: followersMap.get(user._id.toString()) || 0,
-                followingCount: followingMap.get(user._id.toString()) || 0,
-                isFollowing: false // All suggested users are not followed by design
-            };
-        }).filter(Boolean);
-        
-        // Add subscription badges to suggested users
-        const suggestionsWithBadges = await addBadgesToUsers(suggestionsWithDetails);
-
-        // Final response
         return res.status(200).json(
             new ApiResponse(200, {
                 suggestions: suggestionsWithBadges,
                 pagination: {
                     currentPage: page,
-                    totalPages: Math.ceil(suggestionMap.size / limit),
-                    totalSuggestions: suggestionMap.size,
-                    hasNextPage: skip + limit < suggestionMap.size,
+                    totalPages: Math.ceil(eligible.length / limit),
+                    totalSuggestions: eligible.length,
+                    hasNextPage: skip + limit < eligible.length,
                     hasPrevPage: page > 1
                 }
             }, "Suggested for you users retrieved successfully")
