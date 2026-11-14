@@ -88,7 +88,15 @@ export const titleFor = (title, target) =>
  * the data, so the app can open the right account when the push is tapped.
  * `dataOnly` sends without a tray notification (calls use their own UI).
  */
-export const sendFcmToTargets = async (targets, { title, body, type, data = {}, dataOnly = false } = {}) => {
+/**
+ * `androidDataOnly`: Android gets the data alone and the app draws the
+ * notification itself — used for incoming calls, so the phone shows ONE
+ * ringing banner with Accept / Decline instead of the system's plain copy
+ * next to it (client feedback: "the Accept and Decline buttons are not
+ * working"). iPhones still get the alert. `ttlMs` drops a push that could not
+ * be delivered in time (a call should never ring minutes later).
+ */
+export const sendFcmToTargets = async (targets, { title, body, type, data = {}, dataOnly = false, androidDataOnly = false, ttlMs } = {}) => {
     if (!targets?.length || !admin.apps.length) return { sent: 0 };
     const messaging = getMessaging();
     let sent = 0;
@@ -98,10 +106,13 @@ export const sendFcmToTargets = async (targets, { title, body, type, data = {}, 
         const message = {
             token: t.token,
             data: dataOnly ? { ...fullData, title: shownTitle, body: body || '' } : fullData,
-            android: { priority: 'high' },
+            android: { priority: 'high', ...(ttlMs ? { ttl: ttlMs } : {}) },
             apns: { payload: { aps: { contentAvailable: true, sound: 'default', ...(HIGH_PRIORITY.has(type) ? { badge: 1 } : {}) } } },
         };
-        if (!dataOnly) {
+        if (androidDataOnly && !dataOnly) {
+            message.data = { ...fullData, title: shownTitle, body: body || '' };
+            message.apns.payload.aps.alert = { title: shownTitle, body };
+        } else if (!dataOnly) {
             message.notification = { title: shownTitle, body };
             message.android.notification = {
                 channelId: CHANNEL_BY_TYPE[type] || 'follows',

@@ -298,6 +298,8 @@ export const initiateCall = asyncHandler(async (req, res) => {
                 title: `Incoming ${callType} call`,
                 body: `${req.user.fullName || req.user.username} is calling you...`,
                 type: 'incoming_call',
+                androidDataOnly: true,
+                ttlMs: 30 * 1000,
                 data: {
                     callId: newCall._id.toString(),
                     callerId: currentUserId.toString(),
@@ -766,6 +768,24 @@ export const endCall = asyncHandler(async (req, res) => {
     if (otherParticipants.length > 0) {
     } else {
         console.warn('⚠️ No other participants found to notify about call end');
+    }
+
+    // Hung up before anyone answered: a phone in the background only had the
+    // ringing banner, which kept ringing until its 30 s timeout. This push
+    // takes it down (and leaves a "missed call" note). Fire and forget.
+    if (populatedCall.status === 'missed' && otherParticipants.length > 0) {
+        const callerName = req.user.fullName || req.user.username;
+        (async () => {
+            const targets = await getPushTargets(otherParticipants);
+            if (!targets.length) return;
+            await sendFcmToTargets(targets, {
+                title: 'Missed call',
+                body: `You missed a call from ${callerName}`,
+                type: 'call_ended',
+                androidDataOnly: true,
+                data: { callId: String(callId), callerName, reason: 'missed', shouldDismiss: 'true' },
+            });
+        })().catch((err) => console.error('Call ended push failed:', err?.message || err));
     }
 
     res.status(200).json(
