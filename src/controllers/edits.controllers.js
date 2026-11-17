@@ -19,7 +19,7 @@ import {
     parseJsonField, sanitizeEdl, planEdit, containerAllowed, isPng, pngSize, fitMusicWindow, duetBlockReason, formatSeconds,
 } from '../utils/phase5.rules.js';
 import { isFfmpegAvailable, probeMedia } from '../services/ffmpeg.service.js';
-import { editsRoot, removeWorkDir } from '../services/mediaRender.service.js';
+import { editsRoot, removeWorkDir, settleEncodingEdit } from '../services/mediaRender.service.js';
 import { loadUsableSound } from '../services/sounds.service.js';
 import { enqueueEdit } from '../queues/creatorQueue.js';
 
@@ -268,8 +268,10 @@ export const createDuetEdit = asyncHandler((req, res) => startEdit(req, res, 'du
 /** GET /edits/:id */
 export const getEdit = asyncHandler(async (req, res) => {
     if (!isValidId(req.params.id)) throw new ApiError(404, 'We could not find that video.');
-    const edit = await MediaEdit.findOne({ _id: req.params.id, userId: req.user._id }).lean();
+    let edit = await MediaEdit.findOne({ _id: req.params.id, userId: req.user._id }).lean();
     if (!edit) throw new ApiError(404, 'We could not find that video.');
+    // Uploaded but still being encoded by Bunny: check whether it can be played yet.
+    if (edit.status === 'processing' && edit.encodingSince) edit = await settleEncodingEdit(edit);
     return res.status(200).json(new ApiResponse(200, editView(edit), 'Edit'));
 });
 

@@ -6,7 +6,15 @@ import axios from 'axios';
 import MediaEdit from '../models/mediaEdit.models.js';
 import Sound from '../models/sound.models.js';
 import Post from '../models/userPost.models.js';
-import { uploadBufferToBunny, generateOptimizedImageUrl } from '../utils/bunny.js';
+import {
+    uploadBufferToBunny,
+    generateOptimizedImageUrl,
+    isStreamUrl,
+    getStreamVideo,
+    streamGuidFromUrl,
+    streamVideoUrl,
+    bestAvailableRendition,
+} from '../utils/bunny.js';
 import * as ffmpegSvc from './ffmpeg.service.js';
 import { planEdit, buildRenderArgs, buildCoverArgs, duetBlockReason, EditValidationError } from '../utils/phase5.rules.js';
 
@@ -196,11 +204,15 @@ export const runEdit = async (editId, deps = {}) => {
         } catch { /* the video's own thumbnail is used instead */ }
 
         if (!uploadedVideo?.secure_url) throw new Error('Upload returned no URL');
+        // Bunny Stream takes a minute or more to encode before the file can be
+        // played. Until then the edit stays "processing" (the editor keeps
+        // showing "Preparing your video") and settleEncodingEdit finishes it.
+        const encoding = uploadedVideo.processing === true && isStreamUrl(uploadedVideo.secure_url);
         await MediaEdit.updateOne({ _id: edit._id }, {
             $set: {
-                status: 'done',
-                progress: 100,
-                finishedAt: new Date(),
+                status: encoding ? 'processing' : 'done',
+                progress: encoding ? 96 : 100,
+                ...(encoding ? { encodingSince: new Date() } : { finishedAt: new Date() }),
                 result: {
                     type: 'video',
                     url: uploadedVideo.secure_url,
@@ -216,7 +228,7 @@ export const runEdit = async (editId, deps = {}) => {
             },
         });
         await removeWorkDir(dir);
-        return { status: 'done' };
+        return { status: encoding ? 'encoding' : 'done' };
     } catch (err) {
         const retry = !permanent(err) && edit.attempts < MAX_ATTEMPTS;
         if (retry) {
@@ -235,4 +247,80 @@ export const runEdit = async (editId, deps = {}) => {
         console.error(`[edit ${edit._id}] failed:`, err?.message, err?.detail || '');
         return { status: 'failed' };
     }
+};
+
+// ── Waiting for Bunny Stream ────────────────────────────────────────────────
+
+const ENCODE_CHECK_EVERY_MS = 4000;
+const ENCODE_GIVE_UP_MS = () => Number(process.env.EDIT_ENCODE_WAIT_MS) || 10 * 60 * 1000;
+const STREAM_FINISHED = 4;
+const STREAM_FAILED = [5, 6];
+
+/**
+ * Finishes an edit whose video Bunny Stream is still encoding. Called when the
+ * client asks for the edit (it polls) and from the encoding webhook.
+ *
+ * - Encoded: the URL is switched to the best size Bunny actually made (a
+ *   stored 720p URL 404s forever when only smaller sizes exist) and the edit
+ *   is done.
+ * - Encoding failed: the edit fails with a friendly message.
+ * - Still going after EDIT_ENCODE_WAIT_MS (10 min): done anyway, marked as
+ *   processing, which is how every edit used to finish.
+ *
+ * Bunny is asked at most every few seconds per edit, however often the
+ * client polls. Returns the edit as it is afterwards (lean).
+ */
+export const settleEncodingEdit = async (edit, deps = {}) => {
+    const d = { getVideo: getStreamVideo, now: () => Date.now(), ...deps };
+    if (!edit || edit.status !== 'processing' || !edit.encodingSince || !edit.result?.url) return edit;
+    const now = d.now();
+    const finishDone = async (set) => {
+        const updated = await MediaEdit.findOneAndUpdate(
+            { _id: edit._id, status: 'processing' },
+            { $set: { status: 'done', progress: 100, finishedAt: new Date(now), ...set }, $unset: { encodingSince: 1, encodingCheckedAt: 1 } },
+            { new: true },
+        ).lean();
+        return updated || edit;
+    };
+
+    const checkedAt = edit.encodingCheckedAt ? new Date(edit.encodingCheckedAt).getTime() : 0;
+    const force = deps.force === true;
+    if (!force && now - checkedAt < ENCODE_CHECK_EVERY_MS) return edit;
+    // Claim this check so parallel polls do not all ask Bunny.
+    const claimed = await MediaEdit.findOneAndUpdate(
+        { _id: edit._id, status: 'processing', ...(force ? {} : { $or: [{ encodingCheckedAt: { $exists: false } }, { encodingCheckedAt: { $lte: new Date(now - ENCODE_CHECK_EVERY_MS) } }] }) },
+        { $set: { encodingCheckedAt: new Date(now) } },
+        { new: true },
+    ).lean();
+    if (!claimed) return edit;
+
+    const guid = streamGuidFromUrl(edit.result.url);
+    let video = null;
+    try {
+        video = guid ? await d.getVideo(guid) : null;
+    } catch { /* asked again on the next poll */ }
+
+    const status = Number(video?.status);
+    if (status === STREAM_FINISHED) {
+        const best = bestAvailableRendition(video?.availableResolutions);
+        return finishDone({
+            'result.processing': false,
+            ...(best && guid ? { 'result.url': streamVideoUrl(guid, best) } : {}),
+        });
+    }
+    if (STREAM_FAILED.includes(status)) {
+        const failed = await MediaEdit.findOneAndUpdate(
+            { _id: edit._id, status: 'processing' },
+            { $set: { status: 'failed', finishedAt: new Date(now), error: 'We could not prepare your video. Please try again.' }, $unset: { encodingSince: 1, encodingCheckedAt: 1 } },
+            { new: true },
+        ).lean();
+        return failed || edit;
+    }
+    if (now - new Date(edit.encodingSince).getTime() > ENCODE_GIVE_UP_MS()) {
+        return finishDone({ 'result.processing': true });
+    }
+    // Still encoding: nudge the bar so it does not look stuck.
+    const progress = Math.min(99, Math.max(96, Number(claimed.progress) || 96) + 1);
+    await MediaEdit.updateOne({ _id: edit._id, status: 'processing' }, { $set: { progress } });
+    return { ...claimed, progress };
 };

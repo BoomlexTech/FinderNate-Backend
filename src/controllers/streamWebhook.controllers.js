@@ -1,4 +1,6 @@
 import Post from "../models/userPost.models.js";
+import MediaEdit from "../models/mediaEdit.models.js";
+import { settleEncodingEdit } from "../services/mediaRender.service.js";
 import { ApiResponse } from "../utils/ApiResponse.js";
 import { asyncHandler } from "../utils/asyncHandler.js";
 import {
@@ -55,8 +57,19 @@ export const handleStreamWebhook = asyncHandler(async (req, res) => {
 
     // Ids are needed for cache invalidation — invalidatePostCaches keys several
     // entries off the post id, so it cannot be called without one.
+    // An editor result (vibe edit or duet) waiting for this video: finish it,
+    // so the editor's preview can play it.
+    const waitingEdits = await MediaEdit.find({
+        status: 'processing',
+        encodingSince: { $exists: true },
+        'result.url': { $regex: `/${safeGuid}/` },
+    }).lean();
+    for (const edit of waitingEdits) {
+        await settleEncodingEdit(edit, { force: true }).catch(() => {});
+    }
+
     const affected = await Post.find(match).select('_id userId').lean();
-    if (affected.length === 0) return respond('no matching post');
+    if (affected.length === 0) return respond(waitingEdits.length ? `settled ${waitingEdits.length} edit(s)` : 'no matching post');
 
     // Upload stored the 720p URL, but Bunny never upscales — a 360p source
     // only ever produces a 360p MP4, and that stored URL would 404 forever.

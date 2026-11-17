@@ -71,6 +71,11 @@ const MediaEditSchema = new mongoose.Schema({
     cleanedAt: { type: Date, default: null },
     startedAt: Date,
     finishedAt: Date,
+    // Rendered and uploaded to Bunny Stream, which is still encoding it. The
+    // edit stays "processing" until the video can be played (see
+    // settleEncodingEdit); the editor's preview used to get "not found".
+    encodingSince: { type: Date, default: undefined },
+    encodingCheckedAt: { type: Date, default: undefined },
 }, { timestamps: true });
 
 MediaEditSchema.index({ userId: 1, createdAt: -1 });

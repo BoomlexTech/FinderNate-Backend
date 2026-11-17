@@ -14,7 +14,7 @@ import { User } from '../../src/models/user.models.js';
 import { sanitizeEdl } from '../../src/utils/phase5.rules.js';
 import { isFfmpegAvailable, probeMedia, runFfmpeg } from '../../src/services/ffmpeg.service.js';
 import {
-    runEdit, isTrustedMediaUrl, renditionFallbacks, removeWorkDir, editsRoot, downloadFirst,
+    runEdit, isTrustedMediaUrl, renditionFallbacks, removeWorkDir, editsRoot, downloadFirst, settleEncodingEdit,
 } from '../../src/services/mediaRender.service.js';
 import { extractOriginalAudio } from '../../src/services/sounds.service.js';
 import { brightnessLift, enhanceLocally, placeOnBackground, luminanceOf } from '../../src/utils/photoEnhance.utils.js';
@@ -470,4 +470,86 @@ test('enhance endpoint: a plan with no allowance cannot use it', async () => {
     const { error } = await call(enhancePhoto, { user: { _id: 'u1' }, file: { buffer: await solid(1, 1, 1) }, body: {} });
     assert.equal(error.statusCode, 429);
     assert.match(error.message, /not included/);
+});
+
+// ── Waiting for Bunny Stream to encode an edit ──────────────────────────────
+// The editor's preview used to get "not found" for minutes: the edit was
+// "done" as soon as the file reached Bunny, before Bunny could play it.
+
+const encodingEdit = (over = {}) => ({
+    _id: 'e1',
+    status: 'processing',
+    progress: 96,
+    encodingSince: new Date(1_000_000),
+    result: { url: 'https://vz.test/guid-123/play_720p.mp4', processing: true },
+    ...over,
+});
+
+const recordEditWrites = (edit) => {
+    const writes = [];
+    mock.method(MediaEdit, 'findOneAndUpdate', (filter, update) => {
+        writes.push(update);
+        const set = update.$set || {};
+        const next = { ...edit, ...set, result: { ...edit.result } };
+        for (const [k, v] of Object.entries(set)) if (k.startsWith('result.')) next.result[k.slice(7)] = v;
+        return chain(next);
+    });
+    mock.method(MediaEdit, 'updateOne', async (filter, update) => { writes.push(update); return { modifiedCount: 1 }; });
+    return writes;
+};
+
+test('settleEncodingEdit: encoded → done, URL switched to the size Bunny made', async () => {
+    const edit = encodingEdit();
+    recordEditWrites(edit);
+    const out = await settleEncodingEdit(edit, {
+        now: () => 1_030_000,
+        getVideo: async (guid) => { assert.equal(guid, 'guid-123'); return { status: 4, availableResolutions: '240p,360p,480p' }; },
+    });
+    assert.equal(out.status, 'done');
+    assert.equal(out.progress, 100);
+    assert.equal(out.result.processing, false);
+    assert.ok(out.result.url.endsWith('/guid-123/play_480p.mp4'), out.result.url);
+});
+
+test('settleEncodingEdit: still encoding → stays processing, bar moves, Bunny asked once per few seconds', async () => {
+    const edit = encodingEdit();
+    const writes = recordEditWrites(edit);
+    let asked = 0;
+    const out = await settleEncodingEdit(edit, { now: () => 1_020_000, getVideo: async () => { asked++; return { status: 3 }; } });
+    assert.equal(out.status, 'processing');
+    assert.equal(out.progress, 97);
+    assert.equal(asked, 1);
+
+    // Checked a second ago: not asked again.
+    const again = await settleEncodingEdit({ ...edit, encodingCheckedAt: new Date(1_019_000) }, { now: () => 1_020_000, getVideo: async () => { asked++; return { status: 3 }; } });
+    assert.equal(again.status, 'processing');
+    assert.equal(asked, 1);
+    assert.ok(writes.length >= 2);
+});
+
+test('settleEncodingEdit: Bunny failed to encode → the edit fails with a message', async () => {
+    const edit = encodingEdit();
+    recordEditWrites(edit);
+    const out = await settleEncodingEdit(edit, { now: () => 1_020_000, getVideo: async () => ({ status: 5 }) });
+    assert.equal(out.status, 'failed');
+    assert.match(out.error, /could not prepare/);
+});
+
+test('settleEncodingEdit: still going after the wait limit → done, still marked processing', async () => {
+    const edit = encodingEdit();
+    recordEditWrites(edit);
+    const out = await settleEncodingEdit(edit, { now: () => 1_000_000 + 11 * 60 * 1000, getVideo: async () => ({ status: 3 }) });
+    assert.equal(out.status, 'done');
+    assert.equal(out.result.processing, true);
+    assert.equal(out.result.url, 'https://vz.test/guid-123/play_720p.mp4');
+});
+
+test('settleEncodingEdit: edits that are not waiting on Bunny are left alone', async () => {
+    let touched = false;
+    mock.method(MediaEdit, 'findOneAndUpdate', () => { touched = true; return chain(null); });
+    const done = { _id: 'x', status: 'done', result: { url: 'u' } };
+    assert.equal(await settleEncodingEdit(done), done);
+    const rendering = { _id: 'y', status: 'processing', result: null };
+    assert.equal(await settleEncodingEdit(rendering), rendering);
+    assert.equal(touched, false);
 });
