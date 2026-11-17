@@ -186,8 +186,11 @@ export const createComment = asyncHandler(async (req, res) => {
 
 // Get all comments for a post
 export const getCommentsByPost = asyncHandler(async (req, res) => {
-    const { postId, page = 1, limit = 20 } = req.query;
+    const { postId, page = 1, limit = 20, sort } = req.query;
     if (!postId) throw new ApiError(400, "postId is required");
+    // Threads read oldest first. `sort=latest` gives newest first, for the
+    // website's post card that shows a post's latest two comments.
+    const createdOrder = sort === 'latest' ? -1 : 1;
 
     // ✅ FIXED: Handle both Mongoose document and plain object from cache
     const userId = req.user?._id ? req.user._id.toString() : null;
@@ -216,7 +219,7 @@ export const getCommentsByPost = asyncHandler(async (req, res) => {
             })
             .populate('replyToUserId', 'username fullName profileImageUrl isBusinessProfile')
             .populate('mentions', 'username')
-            .sort({ createdAt: 1 })
+            .sort({ createdAt: createdOrder })
             .skip(skip)
             .limit(pageLimit)
             .lean(),
