@@ -1,4 +1,5 @@
 export * from "./auth.controllers.js";
+export * from "./passwordReset.controllers.js";
 export * from "./aadhaar.controllers.js";
 export * from "./reports.controllers.js";
 export * from "./users.controllers.js";

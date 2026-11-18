@@ -8,6 +8,8 @@ import {
     // Authentication
     adminLogin,
     adminLogout,
+    adminForgotPassword,
+    adminResetPassword,
 
     // Aadhaar Verification
     getPendingAadhaarVerifications,
@@ -83,7 +85,7 @@ import {
     verifyAdminJWT,
     requirePermission
 } from "../middlewares/adminAuth.middleware.js";
-import { adminLoginRateLimit } from "../middlewares/rateLimiter.middleware.js";
+import { adminLoginRateLimit, adminPasswordResetRateLimit } from "../middlewares/rateLimiter.middleware.js";
 import {
     requireSuperAdmin,
     setAdminActiveStatus
@@ -100,6 +102,9 @@ const router = Router();
 // adminLoginRateLimit for why this one fails closed. The per-ACCOUNT half of
 // the throttle lives in controllers/admin/auth.controllers.js.
 router.route("/login").post(adminLoginRateLimit, adminLogin);
+// Forgot password, super admin included (controllers/admin/passwordReset.controllers.js).
+router.route("/forgot-password").post(adminPasswordResetRateLimit, adminForgotPassword);
+router.route("/reset-password").post(adminPasswordResetRateLimit, adminResetPassword);
 
 // ===============================
 // PROTECTED ROUTES (AUTH REQUIRED)

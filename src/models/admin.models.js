@@ -26,6 +26,11 @@ const AdminSchema = new mongoose.Schema({
     isActive: { type: Boolean, default: true },
     lastLogin: { type: Date },
     refreshToken: { type: String, select: false },
+    // Forgot password: only the SHA-256 of the emailed token is stored, so a
+    // database read cannot be turned into a reset link.
+    passwordResetTokenHash: { type: String, select: false },
+    passwordResetExpires: { type: Date, select: false },
+    passwordResetRequestedAt: { type: Date, select: false },
     createdBy: {
         type: mongoose.Schema.Types.ObjectId,
         ref: 'Admin',

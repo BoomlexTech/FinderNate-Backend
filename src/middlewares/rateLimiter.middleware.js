@@ -266,6 +266,22 @@ export const adminLoginRateLimit = rateLimit({
     store: new RedisStore({ prefix: 'rl:adminlogin:', windowMs: 15 * 60 * 1000 })
 });
 
+// Admin forgot / reset password: public like the sign-in route, so the same
+// fail-closed Redis store; a handful per IP per hour is plenty for a person.
+export const adminPasswordResetRateLimit = rateLimit({
+    windowMs: 60 * 60 * 1000,
+    max: 8,
+    message: {
+        error: 'Too many password reset attempts. Please try again later.',
+        retryAfter: 3600
+    },
+    standardHeaders: true,
+    legacyHeaders: false,
+    skip: (req) => req.method === 'OPTIONS',
+    passOnStoreError: false,
+    store: new RedisStore({ prefix: 'rl:adminreset:', windowMs: 60 * 60 * 1000 })
+});
+
 // ─────────────────────────────────────────────────────────────────────────────
 // GUEST CHECKOUT (shareable product payment links)
 //
