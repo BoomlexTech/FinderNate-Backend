@@ -103,6 +103,12 @@ export const sendEmail = async ({ to, subject, html, text, headers }) => {
             ...(headers ? { headers } : {}),
         });
 
+        // One line per email, so "it never arrived" can be traced: the sender
+        // used, the recipient, and what the mail server answered. Without it a
+        // successful send left nothing in the logs at all.
+        const rejected = Array.isArray(info?.rejected) && info.rejected.length ? ` rejected=${info.rejected.join(',')}` : '';
+        console.log(`📧 Email sent from=${FROM_ADDRESS} to=${to} subject="${subject}" id=${info?.messageId || '-'} server="${String(info?.response || '').slice(0, 80)}"${rejected}`);
+
         return { success: true, messageId: info?.messageId };
     } catch (error) {
         // Still not thrown — but no longer invisible. Logged with the recipient
