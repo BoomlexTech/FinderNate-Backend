@@ -10,6 +10,7 @@ import { notifyActivity } from '../utils/activityNotify.utils.js';
 import { listingChecks, withGst } from '../utils/phase4.rules.js';
 import { verificationConfigured } from '../services/cashfreeVerify.service.js';
 import { gstPercent } from './platformPayments.controllers.js';
+import { DEFAULT_LISTING_FEES } from '../constants/settings.js';
 
 /**
  * One-time product post for regular users (Phase 4 #80):
@@ -18,8 +19,8 @@ import { gstPercent } from './platformPayments.controllers.js';
  */
 
 const fees = async () => ({
-    30: Number(await getSettingValue('LISTING_FEE_30', null)) || null,
-    60: Number(await getSettingValue('LISTING_FEE_60', null)) || null,
+    30: Number(await getSettingValue('LISTING_FEE_30', DEFAULT_LISTING_FEES[30])) || null,
+    60: Number(await getSettingValue('LISTING_FEE_60', DEFAULT_LISTING_FEES[60])) || null,
 });
 
 /** GET /listings/config */

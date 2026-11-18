@@ -1,4 +1,5 @@
 import mongoose from 'mongoose';
+import { DEFAULT_LISTING_FEES } from '../constants/settings.js';
 import PlatformPurchase from '../models/platformPurchase.models.js';
 import AdCampaign from '../models/adCampaign.models.js';
 import PaidListing from '../models/paidListing.models.js';
@@ -254,8 +255,8 @@ export const getPlatformPaymentConfig = asyncHandler(async (req, res) => {
     const [reKycFee, plusPrice, listing30, listing60, adDailyFee, gst, products] = await Promise.all([
         getSettingValue('RE_KYC_FEE', 100),
         getSettingValue('PLUS_PLAN_PRICE', null),
-        getSettingValue('LISTING_FEE_30', null),
-        getSettingValue('LISTING_FEE_60', null),
+        getSettingValue('LISTING_FEE_30', DEFAULT_LISTING_FEES[30]),
+        getSettingValue('LISTING_FEE_60', DEFAULT_LISTING_FEES[60]),
         getSettingValue('AD_DAILY_FEE', 100),
         gstPercent(),
         playProducts(),

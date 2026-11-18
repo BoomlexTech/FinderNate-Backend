@@ -15,6 +15,8 @@ import { safeEmitToChat, assertNotBlockedInChat, isChatMutedFor } from './helper
 import { buildSharedPostSnapshot, sharedPostSummary, recordPostShare } from '../../utils/sharedPost.utils.js';
 import { notExpiredFilter, redactViewOnce, expiryFor, viewOnceAllowed, parseBool, previewLabel, joinedAtOf, VIEW_ONCE_UNOPENED_TTL_MS } from '../../utils/chatRoles.rules.js';
 import { prepareEncryptedMessage, markChatEncrypted, e2eeEnabled } from '../../utils/e2ee.utils.js';
+import { getSettingValue } from '../../utils/appSettings.utils.js';
+import { DEFAULT_E2EE_INDICATOR } from '../../constants/settings.js';
 import { lookupGif } from '../../services/giphy.service.js';
 import { getPushTargets, sendFcmToTargets } from '../../services/pushTargets.service.js';
 
@@ -178,11 +180,17 @@ export const getChatMessages = asyncHandler(async (req, res) => {
         return msg;
     });
 
+    const e2ee = e2eeEnabled() && !!chat.e2ee?.enabled;
+    // Client item #14: the lock indicator in one-to-one chats, switched by
+    // E2EE_INDICATOR in admin. `e2ee` stays the real state: clients encrypt
+    // and decrypt only on that, never on the indicator.
+    const indicatorOn = (await getSettingValue('E2EE_INDICATOR', DEFAULT_E2EE_INDICATOR)) !== false;
     return res.status(200).json(
         new ApiResponse(200, {
             messages: messagesWithStatus.reverse(),
             disappearingSeconds: Number(chat.disappearing?.seconds) || 0,
-            e2ee: e2eeEnabled() && !!chat.e2ee?.enabled,
+            e2ee,
+            e2eeIndicator: e2ee || (indicatorOn && chat.chatType === 'direct'),
             chatType: chat.chatType,
             participantIds: chat.participants.map(p => p.toString()),
             pagination: {
