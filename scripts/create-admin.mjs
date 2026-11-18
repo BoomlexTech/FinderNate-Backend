@@ -69,22 +69,22 @@ const ask = (question) =>
  * on a TTY; when stdout is piped they are undefined and calling them throws.
  */
 function askHidden(question) {
-  const canMask = Boolean(process.stdout.isTTY && process.stdout.clearLine);
-  if (!canMask) return ask(question);
-
+  // Nothing typed is echoed: readline's output is muted while the answer is
+  // typed (the old redraw-on-keypress approach still let a character show).
+  if (!process.stdout.isTTY) return ask(question);
+  const r = getRl();
   return new Promise((resolve) => {
-    const onData = (char) => {
-      const c = char.toString();
-      if (c !== '\n' && c !== '\r' && c !== '') {
-        process.stdout.clearLine(0);
-        process.stdout.cursorTo(0);
-        process.stdout.write(question);
+    const write = r._writeToOutput;
+    let shownQuestion = false;
+    r._writeToOutput = (text) => {
+      if (!shownQuestion) {
+        shownQuestion = true;
+        write.call(r, text);
       }
     };
-    process.stdin.on('data', onData);
-    getRl().question(question, (value) => {
-      process.stdin.removeListener('data', onData);
-      process.stdout.write('\n');
+    r.question(question, (value) => {
+      r._writeToOutput = write;
+      process.stdout.write(String.fromCharCode(10));
       resolve(value.trim());
     });
   });
