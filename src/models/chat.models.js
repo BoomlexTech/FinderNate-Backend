@@ -115,6 +115,24 @@ const ChatSchema = new mongoose.Schema({
         select: false
     },
 
+    // 📌 Chats a user pinned to the top of their own chat list. Private to each
+    // participant, like `mutes`: only getUserChats asks for it (.select('+pins')).
+    pins: {
+        type: [{
+            _id: false,
+            userId: {
+                type: mongoose.Schema.Types.ObjectId,
+                ref: 'User',
+                required: true
+            },
+            pinnedAt: {
+                type: Date,
+                default: Date.now
+            }
+        }],
+        select: false
+    },
+
     // 📍 Pinned messages
     pinnedMessages: [{
         type: mongoose.Schema.Types.ObjectId

@@ -150,6 +150,21 @@ export const decideKyc = ({ registrationType, gst, pan, aadhaar, businessName })
     return reasons.length ? { status: 'needs_review', reasons } : { status: 'verified', reasons: [] };
 };
 
+/**
+ * One check result in the shape the schema keeps (`kyc.checks.gst|pan|aadhaar`):
+ * the outcome and the names to compare, never the whole answer of the
+ * verification service. Empty values are left out, so a missing field can never
+ * be written as `undefined` (which Mongoose refuses for these paths).
+ */
+export const kycCheck = (result, checkedAt = new Date()) => {
+    const out = { checkedAt };
+    for (const key of ['valid', 'active', 'legalName', 'tradeName', 'name', 'pan', 'last4', 'refId']) {
+        const value = result?.[key];
+        if (value !== undefined && value !== null && value !== '') out[key] = value;
+    }
+    return out;
+};
+
 /** Fields a business can't edit once its details are confirmed (#4). */
 export const LOCKED_FIELDS = ['businessName', 'businessType', 'registrationType', 'gstNumber', 'panNumber', 'location.address', 'location.city', 'location.state', 'location.postalCode'];
 

@@ -271,6 +271,40 @@ class StreamService {
             throw new Error(`Failed to end Stream.io call: ${error.message}`);
         }
     }
+
+    /**
+     * Who is in a call's media room right now.
+     *
+     * Used to tell a call that is really going on from one the database still
+     * lists as open because neither side ever told us it ended (see
+     * utils/callLiveness.rules.js). Never throws: `{ known: false }` means the
+     * question could not be answered and the caller must not guess.
+     *
+     * @returns {Promise<{known: boolean, ended?: boolean, participants?: number, endedAt?: Date|null}>}
+     */
+    async getCallRoomState(callType, callId) {
+        if (!this.isConfigured()) return { known: false };
+        try {
+            const response = await this.client.video.call(callType, String(callId)).get();
+            const call = response?.call;
+            if (!call) return { known: false };
+            const session = call.session;
+            const endedAt = call.ended_at || session?.ended_at || null;
+            return {
+                known: true,
+                ended: !!endedAt,
+                participants: Array.isArray(session?.participants) ? session.participants.length : 0,
+                endedAt: endedAt ? new Date(endedAt) : null,
+            };
+        } catch (error) {
+            // No such room: nobody can be in it.
+            const notFound = error?.metadata?.responseCode === 404 || error?.code === 16 ||
+                /not found|does(n't| not) exist/i.test(String(error?.message || ''));
+            if (notFound) return { known: true, ended: true, participants: 0, endedAt: null };
+            console.warn('⚠️ Could not read the Stream.io room state:', error?.message);
+            return { known: false };
+        }
+    }
 }
 
 // Create singleton instance

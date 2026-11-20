@@ -12,7 +12,7 @@ import Post from '../models/userPost.models.js';
 import Story from '../models/story.models.js';
 import Block from '../models/block.models.js';
 import { User } from '../models/user.models.js';
-import { deleteFromBunny } from '../utils/bunny.js';
+import { deleteFromBunny, uploadBufferToBunny, generateOptimizedImageUrl } from '../utils/bunny.js';
 import { getSettingValue } from '../utils/appSettings.utils.js';
 import {
     EDIT_LIMITS, FILTER_NAMES, TRANSITION_NAMES, DUET_LAYOUTS, MUSIC_MAX_SECONDS, EditValidationError,
@@ -319,15 +319,32 @@ export const loadFinishedEdit = async (editId, userId) => {
     return edit;
 };
 
-/** The media entry for a finished edit, in the shape a post stores. */
-export const mediaFromEdit = async (editId, userId) => {
+/**
+ * The media entry for a finished edit, in the shape a post stores.
+ *
+ * A cover chosen in the composer (`thumbnailFile`, the multipart "thumbnail")
+ * replaces the frame the editor picked. It used to be dropped for an edited
+ * vibe, so "Choose cover" did nothing once the video had been through the
+ * editor (client bug list, 20 Nov 2026).
+ */
+export const mediaFromEdit = async (editId, userId, thumbnailFile = null) => {
     const edit = await loadFinishedEdit(editId, userId);
     if (!edit) return null;
     const r = edit.result;
+    let coverUrl = null;
+    if (thumbnailFile?.buffer && String(thumbnailFile.mimetype || '').startsWith('image/')) {
+        try {
+            const uploaded = await uploadBufferToBunny(thumbnailFile.buffer, 'posts');
+            coverUrl = generateOptimizedImageUrl(uploaded.secure_url, { width: 300, height: 300, crop: 'fill' });
+        } catch (error) {
+            // The post still goes out with the editor's own frame.
+            console.warn('[edits] cover upload failed:', error?.message);
+        }
+    }
     return [{
         type: 'video',
         url: r.url,
-        thumbnailUrl: r.thumbnailUrl || null,
+        thumbnailUrl: coverUrl || r.thumbnailUrl || null,
         duration: r.duration || null,
         dimensions: { width: r.width, height: r.height },
         fileSize: r.fileSize,

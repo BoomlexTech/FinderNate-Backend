@@ -2,8 +2,8 @@ import express from 'express';
 import { verifyJWT, optionalVerifyJWT } from '../middlewares/auth.middleware.js';
 import {
     getBusinessKyc, submitBusinessKyc, businessAadhaarOtp, businessAadhaarVerify,
-    userAadhaarOtp, userAadhaarVerify, getMyKyc, resendDetailsConfirmation, confirmDetailsFromEmail, getTrustInfo,
-    getDetailsConfirmation,
+    userAadhaarOtp, userAadhaarVerify, getMyKyc, resendDetailsConfirmation, confirmDetailsFromEmail, submitDetailsFromEmail,
+    getTrustInfo, getDetailsConfirmation,
 } from '../controllers/kyc.controllers.js';
 import { getAdConfig, createAd, myAds, getAd, cancelAd, serveAds, adImpression, adClick } from '../controllers/ads.controllers.js';
 import { listingConfig, createListing, myListings, cancelListing } from '../controllers/listings.controllers.js';
@@ -16,7 +16,11 @@ import { getBusinessViews, getStatements, getPlusStatus, seoSitemap, seoPost, se
 // Phase 4 (business trust, money and SEO). See docs/PHASE4_API.md.
 
 export const kycRouter = express.Router();
-kycRouter.get('/business/confirm-details', confirmDetailsFromEmail); // email link, public
+// The email buttons (public). GET shows the details and asks; only the POST
+// from that page saves the answer, so a mail scanner opening the link cannot
+// confirm or reject anything.
+kycRouter.get('/business/confirm-details', confirmDetailsFromEmail);
+kycRouter.post('/business/confirm-details', submitDetailsFromEmail);
 kycRouter.use(verifyJWT);
 kycRouter.get('/business', getBusinessKyc);
 kycRouter.post('/business', submitBusinessKyc);

@@ -229,7 +229,19 @@ const respondToRequest = asyncHandler(async (req, res) => {
 
     // Check if request is still pending
     if (request.status !== 'pending') {
-        throw new ApiError(400, "This request has already been responded to");
+        // The same answer again (a second tap on the notification's button, or
+        // the same request answered from another device) is not an error.
+        if (request.status === status) {
+            const current = await ContactRequest.findById(requestId)
+                .populate('requester', 'username fullName profileImageUrl')
+                .populate('business', 'businessName logoUrl');
+            return res.status(200).json(
+                new ApiResponse(200, current, `Contact request ${status} successfully`)
+            );
+        }
+        throw new ApiError(400, request.status === 'approved'
+            ? "You already shared your contact details for this request"
+            : "You already declined this request");
     }
 
     // Update the request

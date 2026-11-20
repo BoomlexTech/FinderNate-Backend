@@ -35,7 +35,7 @@ export const createNormalPost = asyncHandler(async (req, res) => {
 
     const files = extractMediaFiles(req.files);
     // Publishing a draft (#70) reuses the media it already uploaded.
-    const draftMedia = files.length ? null : ((await mediaFromEdit(req.body.editId, userId)) || (await mediaFromDraft(req.body.draftId, userId, req.files?.thumbnail?.[0])));
+    const draftMedia = files.length ? null : ((await mediaFromEdit(req.body.editId, userId, req.files?.thumbnail?.[0])) || (await mediaFromDraft(req.body.draftId, userId, req.files?.thumbnail?.[0])));
     if (!files.length && !draftMedia?.length) throw new ApiError(400, "Media file is required");
 
     const uploadedMedia = draftMedia || await uploadPostMedia(files, req.files?.thumbnail?.[0]);
@@ -96,7 +96,7 @@ export const createTweetPost = asyncHandler(async (req, res) => {
     const files = extractMediaFiles(req.files);
     const uploadedMedia = files.length
         ? await uploadPostMedia(files, req.files?.thumbnail?.[0])
-        : ((await mediaFromEdit(req.body.editId, userId)) || (await mediaFromDraft(req.body.draftId, userId)) || []);
+        : ((await mediaFromEdit(req.body.editId, userId, req.files?.thumbnail?.[0])) || (await mediaFromDraft(req.body.draftId, userId)) || []);
 
     const extras = await buildPostExtras(req.body, userId, { explicitMentions: parsedMentions, isVibe: ["reel", "video"].includes(typeof postType !== "undefined" ? postType : "") });
     const post = await Post.create({
@@ -165,7 +165,7 @@ export const createProductPost = asyncHandler(async (req, res) => {
 
     const files = extractMediaFiles(req.files);
     // Publishing a draft (#70) reuses the media it already uploaded.
-    const draftMedia = files.length ? null : ((await mediaFromEdit(req.body.editId, userId)) || (await mediaFromDraft(req.body.draftId, userId, req.files?.thumbnail?.[0])));
+    const draftMedia = files.length ? null : ((await mediaFromEdit(req.body.editId, userId, req.files?.thumbnail?.[0])) || (await mediaFromDraft(req.body.draftId, userId, req.files?.thumbnail?.[0])));
     if (!files.length && !draftMedia?.length) throw new ApiError(400, "Media file is required");
 
     const uploadedMedia = draftMedia || await uploadPostMedia(files, req.files?.thumbnail?.[0]);
@@ -227,7 +227,7 @@ export const createServicePost = asyncHandler(async (req, res) => {
 
     const files = extractMediaFiles(req.files);
     // Publishing a draft (#70) reuses the media it already uploaded.
-    const draftMedia = files.length ? null : ((await mediaFromEdit(req.body.editId, userId)) || (await mediaFromDraft(req.body.draftId, userId, req.files?.thumbnail?.[0])));
+    const draftMedia = files.length ? null : ((await mediaFromEdit(req.body.editId, userId, req.files?.thumbnail?.[0])) || (await mediaFromDraft(req.body.draftId, userId, req.files?.thumbnail?.[0])));
     if (!files.length && !draftMedia?.length) throw new ApiError(400, "Media file is required");
 
     const uploadedMedia = draftMedia || await uploadPostMedia(files, req.files?.thumbnail?.[0]);
@@ -291,7 +291,7 @@ export const createBusinessPost = asyncHandler(async (req, res) => {
 
     const files = extractMediaFiles(req.files);
     // Publishing a draft (#70) reuses the media it already uploaded.
-    const draftMedia = files.length ? null : ((await mediaFromEdit(req.body.editId, userId)) || (await mediaFromDraft(req.body.draftId, userId, req.files?.thumbnail?.[0])));
+    const draftMedia = files.length ? null : ((await mediaFromEdit(req.body.editId, userId, req.files?.thumbnail?.[0])) || (await mediaFromDraft(req.body.draftId, userId, req.files?.thumbnail?.[0])));
     if (!files.length && !draftMedia?.length) throw new ApiError(400, "Media file is required");
 
     const uploadedMedia = draftMedia || await uploadPostMedia(files, req.files?.thumbnail?.[0]);
@@ -379,7 +379,7 @@ export const createBatchPosts = asyncHandler(async (req, res) => {
         const thumbnail = req.files?.[`post_${i}_thumbnail`]?.[0] || null;
         const files = [...images, ...videos];
         // Phase 5: a video prepared in the editor stands in for the upload.
-        const editMedia = files.length ? null : await mediaFromEdit(p.editId, userId);
+        const editMedia = files.length ? null : await mediaFromEdit(p.editId, userId, thumbnail);
 
         if (postType !== "tweet" && !files.length && !editMedia) {
             throw new ApiError(400, `Post ${i + 1}: Media file is required for ${postType} posts`);

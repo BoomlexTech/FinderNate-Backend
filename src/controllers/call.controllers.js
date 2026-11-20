@@ -9,10 +9,14 @@ import { asyncHandler } from '../utils/asyncHandler.js';
 import socketManager from '../config/socket.js';
 import mongoose from 'mongoose';
 import { isBlockedBetween } from '../middlewares/blocking.middleware.js';
+import {
+    OPEN_CALL_STATUSES, RING_WINDOW_MS, staleCallVerdict, staleCallClosure, busyMessage,
+} from '../utils/callLiveness.rules.js';
 
 // Constants for call management
-const CALL_TIMEOUT_MINUTES = 2; // Calls timeout after 2 minutes if not answered
-const CLEANUP_INTERVAL_MINUTES = 5; // Run cleanup every 5 minutes
+// How long a call may ring and when an abandoned one is closed are decided in
+// utils/callLiveness.rules.js; this is only how often the sweep runs.
+const CLEANUP_INTERVAL_MINUTES = 1;
 
 // Helper function to safely emit socket events
 const safeEmitToUser = (userId, event, data) => {
@@ -50,39 +54,95 @@ const endStreamRoom = async (callId) => {
     }
 };
 
+/**
+ * What the media service says about a call's room (asked only for answered
+ * calls: a ringing call is judged by the clock alone).
+ */
+const roomStateOf = async (call) => {
+    if (!['connecting', 'active'].includes(call.status)) return undefined;
+    try {
+        const streamService = (await import('../config/stream.config.js')).default;
+        return await streamService.getCallRoomState('default', call._id.toString());
+    } catch {
+        return { known: false };
+    }
+};
+
+/**
+ * Closes a call that neither side closed. Tells both phones, so a call screen
+ * or a ringing banner that is somehow still up goes away.
+ */
+const closeStaleCall = async (call, verdict, room) => {
+    const closure = staleCallClosure(call, verdict, { roomEndedAt: room?.endedAt });
+    // Only if it is still open: the real "end" request may arrive at the same moment.
+    const updated = await Call.findOneAndUpdate(
+        { _id: call._id, status: { $in: OPEN_CALL_STATUSES } },
+        {
+            $set: {
+                ...closure,
+                duration: call.startedAt && closure.status === 'ended'
+                    ? Math.max(0, Math.floor((closure.endedAt - new Date(call.startedAt)) / 1000))
+                    : 0,
+            },
+        },
+        { new: true }
+    );
+    if (!updated) return false;
+
+    // Close the Stream.io room too - the DB status alone leaves it live
+    endStreamRoom(call._id);
+
+    call.participants.map(p => p.toString()).forEach(participantId => {
+        safeEmitToUser(participantId, closure.status === 'missed' ? 'call_timeout' : 'call_ended', {
+            callId: call._id,
+            endReason: closure.endReason,
+            action: 'dismiss',
+            shouldDismiss: true,
+            timestamp: new Date()
+        });
+    });
+    return true;
+};
+
+/**
+ * Closes the open calls of these people that are not really going on any more
+ * (see utils/callLiveness.rules.js). Run before the "already in a call" check,
+ * so a call nobody closed can never block the next one. Never throws.
+ */
+const releaseStaleCalls = async (userIds) => {
+    try {
+        const openCalls = await Call.find({
+            participants: { $in: userIds },
+            status: { $in: OPEN_CALL_STATUSES }
+        });
+        for (const call of openCalls) {
+            const room = await roomStateOf(call);
+            const verdict = staleCallVerdict(call, { room });
+            if (verdict === 'live') continue;
+            await closeStaleCall(call, verdict, room);
+        }
+    } catch (error) {
+        console.error('❌ Could not release stale calls:', error?.message || error);
+    }
+};
+
 // Helper function to cleanup stale calls
+//
+// Covers every open state. It used to look only at calls still ringing after
+// two minutes; an ANSWERED call that neither side closed (app killed, phone
+// offline) stayed "connecting"/"active" for ever and kept both people busy.
 const cleanupStaleCalls = async () => {
     try {
-        const timeoutDate = new Date(Date.now() - (CALL_TIMEOUT_MINUTES * 60 * 1000));
+        const candidates = await Call.find({
+            status: { $in: OPEN_CALL_STATUSES },
+            initiatedAt: { $lt: new Date(Date.now() - RING_WINDOW_MS) }
+        }).sort({ initiatedAt: 1 }).limit(200);
 
-        // Find calls that are stuck in initiated/ringing state beyond timeout
-        const staleCalls = await Call.find({
-            status: { $in: ['initiated', 'ringing'] },
-            initiatedAt: { $lt: timeoutDate }
-        });
-
-        for (const call of staleCalls) {
-
-            // Update call status
-            call.status = 'missed';
-            call.endedAt = new Date();
-            call.endReason = 'timeout';
-            await call.save();
-
-            // Close the Stream.io room too - the DB status alone leaves it live
-            endStreamRoom(call._id);
-
-            // Notify participants
-            const participantIds = call.participants.map(p => p.toString());
-            participantIds.forEach(participantId => {
-                safeEmitToUser(participantId, 'call_timeout', {
-                    callId: call._id,
-                    timestamp: new Date()
-                });
-            });
-        }
-
-        if (staleCalls.length > 0) {
+        for (const call of candidates) {
+            const room = await roomStateOf(call);
+            const verdict = staleCallVerdict(call, { room });
+            if (verdict === 'live') continue;
+            await closeStaleCall(call, verdict, room);
         }
     } catch (error) {
         console.error('❌ Error during call cleanup:', error);
@@ -99,9 +159,11 @@ const hasActiveCall = async (userId, session = null) => {
         status: { $in: ['initiated', 'ringing', 'connecting', 'active'] }
     };
 
+    // Newest first: if an old call is somehow still open, the one that matters
+    // is the one ringing now.
     const baseQuery = session ?
-        Call.findOne(query).session(session) :
-        Call.findOne(query);
+        Call.findOne(query).sort({ initiatedAt: -1 }).session(session) :
+        Call.findOne(query).sort({ initiatedAt: -1 });
 
     return baseQuery.populate('participants', 'username fullName profileImageUrl')
         .populate('initiator', 'username fullName profileImageUrl');
@@ -166,6 +228,9 @@ export const initiateCall = asyncHandler(async (req, res) => {
             throw new ApiError(400, 'Cannot call yourself');
         }
 
+        // A call nobody closed must not keep these two people "busy".
+        await releaseStaleCalls([currentUserId, receiver._id]);
+
         // Use transaction to prevent race conditions
         const session = await mongoose.startSession();
         let newCall;
@@ -178,12 +243,16 @@ export const initiateCall = asyncHandler(async (req, res) => {
 
                 if (currentUserActiveCall || receiverActiveCall) {
                     const existingCall = currentUserActiveCall || receiverActiveCall;
-                    const busyUser = currentUserActiveCall ? 'You are' : 'The recipient is';
-                    console.warn('⚠️ User already in call:', { existingCallId: existingCall._id, busyUser });
+                    const callerBusy = !!currentUserActiveCall;
+                    console.warn('⚠️ User already in call:', { existingCallId: existingCall._id, callerBusy });
 
                     // Create enhanced error with call details
-                    const error = new ApiError(409, `${busyUser} already in a call`);
+                    const error = new ApiError(409, busyMessage({
+                        callerBusy,
+                        receiverName: receiver.fullName || receiver.username,
+                    }));
                     error.data = {
+                        code: callerBusy ? 'CALLER_BUSY' : 'RECEIVER_BUSY',
                         existingCallId: existingCall._id,
                         existingCall: {
                             _id: existingCall._id,

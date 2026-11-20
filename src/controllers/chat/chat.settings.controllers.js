@@ -9,6 +9,7 @@ import mongoose from 'mongoose';
 import { redisClient } from '../../config/redis.config.js';
 import { uploadBufferToBunny } from '../../utils/bunny.js';
 import { checkGroupPermission } from '../../utils/chatRoles.rules.js';
+import { MAX_PINNED_CHATS, pinFieldsFor } from '../../utils/chatPin.utils.js';
 
 export const updateChatTheme = asyncHandler(async (req, res) => {
     const currentUserId = req.user._id;
@@ -325,4 +326,81 @@ export const unmuteChat = asyncHandler(async (req, res) => {
     safeEmitToUser(currentUserId, 'chat_mute_updated', { chatId, ...state });
 
     return res.status(200).json(new ApiResponse(200, { chatId, ...state }, 'Chat notifications unmuted'));
+});
+
+
+/* ------------------------------- pinned chats ------------------------------ */
+
+/**
+ * PATCH /chats/:chatId/pin
+ *
+ * Keeps this chat at the top of the caller's own chat list. Private to the
+ * caller: nobody else is told and nobody else's list changes. Up to
+ * MAX_PINNED_CHATS chats can be pinned; pinning one that is already pinned is
+ * not an error.
+ */
+export const pinChat = asyncHandler(async (req, res) => {
+    const currentUserId = req.user._id;
+    const { chatId } = req.params;
+
+    if (!mongoose.isValidObjectId(chatId)) {
+        throw new ApiError(404, 'Chat not found or you are not a participant');
+    }
+    const filter = { _id: chatId, participants: currentUserId };
+    const chat = await Chat.findOne(filter).select('+pins').lean();
+    if (!chat) {
+        throw new ApiError(404, 'Chat not found or you are not a participant');
+    }
+
+    const existing = pinFieldsFor(chat, currentUserId);
+    if (existing.isPinned) {
+        return res.status(200).json(new ApiResponse(200, { chatId, ...existing }, 'Chat pinned'));
+    }
+
+    const pinnedElsewhere = await Chat.countDocuments({
+        participants: currentUserId,
+        'pins.userId': currentUserId,
+        _id: { $ne: chat._id },
+    });
+    if (pinnedElsewhere >= MAX_PINNED_CHATS) {
+        const error = new ApiError(409, `You can pin up to ${MAX_PINNED_CHATS} chats. Unpin one first.`);
+        error.data = { code: 'PIN_LIMIT', limit: MAX_PINNED_CHATS };
+        throw error;
+    }
+
+    const pinnedAt = new Date();
+    // Pull first, so two quick taps can never leave two entries for one person.
+    await Chat.updateOne(filter, { $pull: { pins: { userId: currentUserId } } });
+    await Chat.updateOne(filter, { $push: { pins: { userId: currentUserId, pinnedAt } } });
+
+    const state = { isPinned: true, pinnedAt: pinnedAt.toISOString() };
+    await invalidateChatListCache(currentUserId);
+    // The caller's other signed-in devices move the chat to the top too.
+    safeEmitToUser(currentUserId, 'chat_pin_updated', { chatId, ...state });
+
+    return res.status(200).json(new ApiResponse(200, { chatId, ...state }, 'Chat pinned'));
+});
+
+/** DELETE /chats/:chatId/pin — puts the chat back in its normal place. */
+export const unpinChat = asyncHandler(async (req, res) => {
+    const currentUserId = req.user._id;
+    const { chatId } = req.params;
+
+    if (!mongoose.isValidObjectId(chatId)) {
+        throw new ApiError(404, 'Chat not found or you are not a participant');
+    }
+
+    const result = await Chat.updateOne(
+        { _id: chatId, participants: currentUserId },
+        { $pull: { pins: { userId: currentUserId } } }
+    );
+    if (result.matchedCount === 0) {
+        throw new ApiError(404, 'Chat not found or you are not a participant');
+    }
+
+    const state = { isPinned: false, pinnedAt: null };
+    await invalidateChatListCache(currentUserId);
+    safeEmitToUser(currentUserId, 'chat_pin_updated', { chatId, ...state });
+
+    return res.status(200).json(new ApiResponse(200, { chatId, ...state }, 'Chat unpinned'));
 });

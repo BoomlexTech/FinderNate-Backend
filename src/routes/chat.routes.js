@@ -42,7 +42,9 @@ import {
     togglePinMessage,
     getPinnedMessages,
     muteChat,
-    unmuteChat
+    unmuteChat,
+    pinChat,
+    unpinChat
 } from '../controllers/chat/index.js';
 
 const router = express.Router();
@@ -69,6 +71,10 @@ router.patch('/:chatId/theme', updateChatTheme);
 // Mute / unmute push notifications for one chat (Phase 2 #38)
 router.patch('/:chatId/mute', muteChat);
 router.delete('/:chatId/mute', unmuteChat);
+
+// Pin / unpin a chat at the top of the caller's own chat list
+router.patch('/:chatId/pin', pinChat);
+router.delete('/:chatId/pin', unpinChat);
 
 // Set, replace or clear a group's image (admins only; multipart 'groupImage')
 router.patch('/:chatId/group-image', upload.single('groupImage'), updateGroupImage);

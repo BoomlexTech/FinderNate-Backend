@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import { publicApiUrl } from './publicUrls.js';
 
 /**
  * Daily email digest (Phase 2 #10). Pure helpers.
@@ -48,7 +49,9 @@ export const verifyUnsubscribeToken = (userId, category, token) => {
 };
 
 export const unsubscribeUrl = (userId, category) => {
-    const base = (process.env.BACKEND_URL || 'https://apis.findernate.com').replace(/\/+$/, '');
+    // publicApiUrl() ignores a BACKEND_URL that points at a host that does not
+    // exist, so the unsubscribe link in the email always opens.
+    const base = publicApiUrl();
     const qs = new URLSearchParams({ u: String(userId), c: category, t: unsubscribeToken(String(userId), category) });
     return `${base}/api/v1/email/unsubscribe?${qs}`;
 };

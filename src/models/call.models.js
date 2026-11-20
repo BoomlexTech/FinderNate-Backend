@@ -137,6 +137,9 @@ CallSchema.statics.getActiveCall = function (userId) {
         participants: userId,
         status: { $in: ['initiated', 'ringing', 'connecting', 'active'] }
     })
+        // Newest first, so a call that is ringing now is never hidden behind an
+        // older one that was left open.
+        .sort({ initiatedAt: -1 })
         .populate('participants', 'username fullName profileImageUrl')
         .populate('initiator', 'username fullName profileImageUrl');
 };

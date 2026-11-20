@@ -12,6 +12,10 @@ import { sendEmail } from "../utils/sendEmail.js";
 import { renderEmail, emailParagraph, emailCallout } from "../utils/emailTemplate.js";
 import { deliverPush } from "../services/pushDelivery.service.js";
 import { buildSubscriptionNotice, settleWithin } from "../utils/subscriptionNotice.utils.js";
+import ContactRequest from "../models/contactRequest.models.js";
+import {
+    contactRequestData, contactResponseData, contactRequestLookup, matchContactRequest, contactRequestView,
+} from "../utils/contactRequestNotice.rules.js";
 
 // How long a plan notice waits for its push or its email before moving on. The
 // mail transport has no timeout shorter than minutes, and the reminder job sends
@@ -224,14 +228,20 @@ export const createContactRequestNotification = async ({ recipientId, sourceUser
         ? `requested contact details for ${businessName}`
         : 'requested your contact details';
 
+    // `data` says which request this is, so the notification list can offer
+    // Accept / Reject (client bug list, 20 Nov 2026).
     const notification = await Notification.create({
         receiverId: recipientId,
         type: 'others',
         senderId: sourceUserId,
         message,
+        data: contactRequestData({ requestId, businessId }),
     });
 
-    sendRealTimeNotification(recipientId, notification, { type: 'contact_request' });
+    sendRealTimeNotification(recipientId, notification, {
+        type: 'contact_request',
+        contactRequest: contactRequestView('request', { _id: requestId, business: businessId, status: 'pending', message: requestMessage }),
+    });
     await notificationCache.invalidateNotificationCache(recipientId);
 
     (async () => {
@@ -276,9 +286,13 @@ export const createContactResponseNotification = async ({ recipientId, sourceUse
         type: 'others',
         senderId: sourceUserId || null,
         message: responseMessage ? `${message}: ${responseMessage}` : message,
+        data: contactResponseData({ requestId, businessId, status }),
     });
 
-    sendRealTimeNotification(recipientId, notification, { type: 'contact_request_response' });
+    sendRealTimeNotification(recipientId, notification, {
+        type: 'contact_request_response',
+        contactRequest: contactRequestView('response', { _id: requestId, business: businessId, status, responseMessage }),
+    });
     await notificationCache.invalidateNotificationCache(recipientId);
 
     (async () => {
@@ -546,6 +560,41 @@ export const createUnlikeNotification = async ({ recipientId, sourceUserId, post
 };
 
 //  Get Logged-in User's Notifications
+/**
+ * Adds `contactRequest` ({ kind, requestId, businessId, status, canRespond })
+ * to the contact-request notifications of one page, read from the requests
+ * themselves so the status is always the current one. One query for the page.
+ * Never throws: the list must load even if this lookup fails.
+ */
+const attachContactRequests = async (notifications, receiverId) => {
+    try {
+        const lookups = notifications
+            .map((n) => ({ n, lookup: contactRequestLookup({ ...n, receiverId: n.receiverId || receiverId }) }))
+            .filter((x) => x.lookup);
+        if (!lookups.length) return;
+
+        const or = [];
+        const ids = [...new Set(lookups.filter((x) => x.lookup.by === 'id').map((x) => x.lookup.requestId))];
+        if (ids.length) or.push({ _id: { $in: ids } });
+        const pairs = new Map();
+        lookups.filter((x) => x.lookup.by === 'people').forEach(({ lookup }) => {
+            pairs.set(`${lookup.requester}|${lookup.businessOwner}`, { requester: lookup.requester, businessOwner: lookup.businessOwner });
+        });
+        or.push(...pairs.values());
+        if (!or.length) return;
+
+        const requests = await ContactRequest.find({ $or: or })
+            .select('requester business businessOwner status message responseMessage createdAt respondedAt')
+            .lean();
+        lookups.forEach(({ n, lookup }) => {
+            const view = contactRequestView(lookup.kind, matchContactRequest(lookup, requests, n.createdAt));
+            if (view) n.contactRequest = view;
+        });
+    } catch (error) {
+        console.warn('[notifications] contact request lookup failed:', error?.message);
+    }
+};
+
 export const getNotifications = asyncHandler(async (req, res) => {
     const receiverId = req.user._id;
     const blockedUsers = req.blockedUsers || [];
@@ -608,6 +657,8 @@ export const getNotifications = asyncHandler(async (req, res) => {
             }
         });
     }
+
+    await attachContactRequests(notifications, receiverId);
 
     res.set({
         'X-Total-Count': String(totalCount),

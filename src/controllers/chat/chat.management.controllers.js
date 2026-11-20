@@ -9,6 +9,7 @@ import { redisClient } from '../../config/redis.config.js';
 import { safeEmitToChat, safeEmitToUser, checkFollowStatus, assertNotBlockedInChat, getBlockedParticipantIds, muteFieldsFor } from './helpers.js';
 import { roleOf, effectiveOwnerId, checkGroupPermission, notExpiredFilter, previewLabel, joinedAtOf, MAX_GROUP_MEMBERS } from '../../utils/chatRoles.rules.js';
 import { postSystemMessage } from '../../utils/chatSystem.utils.js';
+import { MAX_PINNED_CHATS, pinFieldsFor } from '../../utils/chatPin.utils.js';
 
 export const createChat = asyncHandler(async (req, res) => {
     const currentUserId = req.user._id;
@@ -236,15 +237,29 @@ export const getUserChats = asyncHandler(async (req, res) => {
     if (process.env.NODE_ENV === 'development' && process.env.DEBUG_CHAT === 'true') {
     }
 
-    const [chats, total] = await Promise.all([
-        Chat.find(chatFilter)
-            .select('+mutes')
+    // The caller's pinned chats come first and are all on page 1, whatever
+    // their age; the pages then walk the chats that are not pinned. (A pin
+    // belongs to the person who set it — see utils/chatPin.utils.js.)
+    const pinnedFilter = { $and: [chatFilter, { 'pins.userId': userObjectId }] };
+    const unpinnedFilter = { $and: [chatFilter, { 'pins.userId': { $ne: userObjectId } }] };
+    const [pinnedChats, unpinnedChats, total, pinnedTotal] = await Promise.all([
+        pageNum === 1
+            ? Chat.find(pinnedFilter)
+                .select('+mutes +pins')
+                .sort({ lastMessageAt: -1 })
+                .limit(MAX_PINNED_CHATS * 2)
+                .lean()
+            : Promise.resolve([]),
+        Chat.find(unpinnedFilter)
+            .select('+mutes +pins')
             .sort({ lastMessageAt: -1 })
             .skip(skip)
             .limit(pageLimit)
             .lean(),
-        Chat.countDocuments(chatFilter)
+        Chat.countDocuments(unpinnedFilter),
+        Chat.countDocuments(pinnedFilter)
     ]);
+    const chats = [...pinnedChats, ...unpinnedChats];
 
     if (process.env.NODE_ENV === 'development' && process.env.DEBUG_CHAT === 'true') {
     }
@@ -496,6 +511,10 @@ export const getUserChats = asyncHandler(async (req, res) => {
         delete chatWithUsers.mutes;
         delete chatWithUsers.mutedBy;
 
+        // The caller's own pin, for the same reason.
+        Object.assign(chatWithUsers, pinFieldsFor(chat, currentUserId));
+        delete chatWithUsers.pins;
+
         return chatWithUsers;
     }));
 
@@ -527,8 +546,11 @@ export const getUserChats = asyncHandler(async (req, res) => {
             chatStatus: statusFilter,
             pagination: {
                 currentPage: pageNum,
+                // Pages count the chats that are not pinned; the pinned ones
+                // ride along on page 1.
                 totalPages: Math.ceil(actualTotal / pageLimit),
-                totalChats: actualTotal,
+                totalChats: actualTotal + pinnedTotal,
+                pinnedChats: pinnedTotal,
                 deduplicatedChatsReturned: deduplicatedTotal,
                 hasNextPage: pageNum < Math.ceil(actualTotal / pageLimit),
                 hasPrevPage: pageNum > 1

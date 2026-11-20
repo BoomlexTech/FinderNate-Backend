@@ -11,11 +11,17 @@ import { getSettingValue } from '../utils/appSettings.utils.js';
 import { refreshStoredTier, tiersFor } from '../utils/businessVisibility.utils.js';
 import {
     decideKyc, effectiveKycStatus, isValidGstin, isValidPan, maskId, normalizeId, panFromGstin,
-    visibilityTier, LOCKED_FIELDS,
+    visibilityTier, LOCKED_FIELDS, kycCheck,
 } from '../utils/phase4.rules.js';
 import {
     verificationConfigured, verifyGstin, verifyPan, sendAadhaarOtp, verifyAadhaarOtp,
 } from '../services/cashfreeVerify.service.js';
+import { publicApiUrl, publicSiteUrl } from '../utils/publicUrls.js';
+import { renderEmail, escapeHtml as escapeEmailHtml } from '../utils/emailTemplate.js';
+import { renderDetailsPage } from '../utils/detailsConfirmation.page.js';
+import {
+    snapshotHash, readDetailsLink, decideDetailsLink, detailsLinkParams, signDetailsLink,
+} from '../utils/detailsConfirmation.rules.js';
 
 /**
  * Business KYC (Phase 4 #79, #30, #4, #74). See docs/PHASE4_API.md.
@@ -25,6 +31,13 @@ const loadBusiness = async (userId) => {
     const business = await Business.findOne({ userId });
     if (!business) throw new ApiError(404, 'Create your business profile first');
     return business;
+};
+
+/** The Aadhaar check on record, as a plain object (undefined when there is none). */
+const storedAadhaarCheck = (business) => {
+    const plain = typeof business?.toObject === 'function' ? business.toObject() : business;
+    const check = plain?.kyc?.checks?.aadhaar;
+    return check && Object.keys(check).length ? check : undefined;
 };
 
 const badgeOf = (b) => (effectiveKycStatus(b) === 'verified'
@@ -101,8 +114,7 @@ export const submitBusinessKyc = asyncHandler(async (req, res) => {
     business.registrationType = registrationType;
     business.panNumber = pan;
     if (gstin) business.gstNumber = gstin;
-    business.kyc = business.kyc || {};
-    business.kyc.submittedAt = new Date();
+    business.set('kyc.submittedAt', new Date());
 
     let gst = null;
     let panRes = null;
@@ -115,30 +127,32 @@ export const submitBusinessKyc = asyncHandler(async (req, res) => {
         }
     }
     const now = new Date();
-    business.kyc.checks = {
-        ...(business.kyc.checks || {}),
-        ...(gst?.available ? { gst: { ...gst, checkedAt: now } } : {}),
-        ...(panRes?.available ? { pan: { ...panRes, checkedAt: now } } : {}),
-    };
+    // Each check is written to its own path. Rebuilding `kyc.checks` from a
+    // spread of the document's own value does not work: a nested path of a
+    // Mongoose document spreads into `undefined` for the checks that were not
+    // touched, and saving then failed with "Cast to Object failed for value
+    // undefined at path kyc.checks.aadhaar" — every KYC submission ended in an
+    // error (client bug list, 20 Nov 2026).
+    if (gst?.available) business.set('kyc.checks.gst', kycCheck(gst, now));
+    if (panRes?.available) business.set('kyc.checks.pan', kycCheck(panRes, now));
 
     let decision;
     if (!verificationConfigured() || (gstin && !gst?.available) || !panRes?.available) {
         decision = { status: 'needs_review', reasons: ['Automatic checks are not available; an admin will review your details'] };
     } else {
         decision = decideKyc({
-            registrationType, gst, pan: panRes, aadhaar: business.kyc.checks?.aadhaar, businessName: business.businessName,
+            registrationType, gst, pan: panRes, aadhaar: storedAadhaarCheck(business), businessName: business.businessName,
         });
     }
-    business.kyc.status = decision.status;
-    business.kyc.reasons = decision.reasons;
-    business.kyc.source = decision.status === 'verified' ? 'auto' : business.kyc.source;
+    business.set('kyc.status', decision.status);
+    business.set('kyc.reasons', decision.reasons);
     if (decision.status === 'verified') {
-        business.kyc.verifiedAt = now;
-        business.kyc.recheckDueAt = undefined;
+        business.set('kyc.source', 'auto');
+        business.set('kyc.verifiedAt', now);
+        business.set('kyc.recheckDueAt', undefined);
         business.verificationStatus = 'approved';
         business.isVerified = true;
     }
-    business.markModified('kyc');
     await business.save();
     await refreshStoredTier(req.user._id);
     await notifyKyc(req.user._id, decision.status, decision.reasons);
@@ -162,10 +176,21 @@ export const businessAadhaarVerify = asyncHandler(async (req, res) => {
     const r = await verifyAadhaarOtp(req.body?.refId, req.body?.otp);
     if (!r.available) throw new ApiError(503, 'Aadhaar verification is not available yet');
     if (!r.valid) throw new ApiError(400, r.message || 'The OTP is not correct');
-    business.kyc = business.kyc || {};
-    business.kyc.checks = { ...(business.kyc.checks || {}), aadhaar: { valid: true, name: r.name, last4: String(req.body?.last4 || '').slice(-4), refId: r.refId, checkedAt: new Date() } };
-    business.markModified('kyc');
-    await business.save();
+    // Written to its own path with a plain update: the OTP has just been used
+    // up at UIDAI, so nothing else about the business document (an old row
+    // that fails today's validators, the other checks) may stop the result
+    // from being kept. See the note in submitBusinessKyc on why the checks are
+    // never rebuilt from a spread.
+    await Business.updateOne({ _id: business._id }, {
+        $set: {
+            'kyc.checks.aadhaar': kycCheck({
+                valid: true,
+                name: r.name,
+                last4: String(req.body?.last4 || '').replace(/\D/g, '').slice(-4),
+                refId: r.refId,
+            }),
+        },
+    });
     return res.status(200).json(new ApiResponse(200, { valid: true, name: r.name }, 'Aadhaar verified'));
 });
 
@@ -204,11 +229,13 @@ export const getMyKyc = asyncHandler(async (req, res) => {
 
 const signingSecret = () => process.env.EMAIL_UNSUBSCRIBE_SECRET || process.env.ACCESS_TOKEN_SECRET || 'findernate';
 
-export const detailsToken = (businessId, action, sentAt) => crypto
-    .createHmac('sha256', signingSecret())
-    .update(`${businessId}:${action}:${new Date(sentAt).getTime()}`)
-    .digest('hex')
-    .slice(0, 32);
+/** Signature of an email button in the format used before 20 Nov 2026. Those emails stay valid. */
+export const detailsToken = (businessId, action, sentAt) => signDetailsLink({
+    secret: signingSecret(),
+    businessId: String(businessId),
+    action,
+    sentAtMs: new Date(sentAt).getTime(),
+});
 
 /**
  * The mandatory business details the owner is asked to confirm by email
@@ -229,9 +256,23 @@ const snapshotOf = (b) => ({
     address: [b.location?.address, b.location?.city, b.location?.state, b.location?.postalCode].filter(Boolean).join(', ') || null,
 });
 
-const sameSnapshot = (a, b) => JSON.stringify(a || {}) === JSON.stringify(b || {});
+const sameSnapshot = (a, b) => snapshotHash(a) === snapshotHash(b);
 
-const escapeHtml = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+/** Label and value of every detail that has a value, in the order shown to the owner. */
+const snapshotRows = (snap) => [
+    ['Business name', snap.businessName], ['Business type', snap.businessType], ['Category', snap.category],
+    ['Description', snap.description], ['Phone', snap.phone], ['Email', snap.email], ['Address', snap.address],
+    ['Registration', snap.registrationType ? (snap.registrationType === 'registered' ? 'Registered (GST)' : 'Unregistered') : null],
+    ['GSTIN', snap.gstNumber], ['PAN', snap.panNumber], ['Aadhaar', snap.aadhaar],
+].filter(([, v]) => v);
+
+const CONFIRM_PATH = '/api/v1/kyc/business/confirm-details';
+
+/** The address behind one email button. Built on the address that really serves this API. */
+const detailsLink = (businessId, action, sentAtMs, hash) => {
+    const params = detailsLinkParams({ secret: signingSecret(), businessId: String(businessId), action, sentAtMs, hash });
+    return `${publicApiUrl()}${CONFIRM_PATH}?${new URLSearchParams(params)}`;
+};
 
 /** Where the confirmation email goes: the business email, else the account email. */
 export const confirmationRecipient = async (business) => {
@@ -246,37 +287,76 @@ export const maskEmail = (email) => {
     return `${name.slice(0, 2)}${'*'.repeat(Math.max(1, name.length - 2))}@${domain}`;
 };
 
+const EMAIL_FONT = "'Segoe UI',Roboto,Helvetica,Arial,sans-serif";
+
+/** One full-width button. A table cell, so Outlook keeps the padding (see emailTemplate.js). */
+const emailLinkButton = (url, label, { primary }) => `
+            <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="margin:${primary ? 24 : 10}px 0 0 0;">
+              <tr>
+                <td align="center" bgcolor="${primary ? '#FDC700' : '#FFFFFF'}" style="background-color:${primary ? '#FDC700' : '#FFFFFF'}; border:1px solid ${primary ? '#FDC700' : '#D1D5DB'}; border-radius:8px;">
+                  <a href="${escapeEmailHtml(url)}" style="display:block; padding:13px 20px; font-family:${EMAIL_FONT}; font-size:15px; font-weight:600; line-height:20px; color:#1A1A1A; text-decoration:none;">${escapeEmailHtml(label)}</a>
+                </td>
+              </tr>
+            </table>`;
+
+const emailDetailRows = (rows) => `
+            <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="margin:20px 0 0 0; border:1px solid #E0E0E0; border-radius:10px;">
+              ${rows.map(([label, value], i) => `<tr>
+                <td valign="top" width="36%" style="padding:11px 14px; ${i ? 'border-top:1px solid #EEEEEE; ' : ''}font-family:${EMAIL_FONT}; font-size:13px; line-height:19px; color:#6B7280;">${escapeEmailHtml(label)}</td>
+                <td valign="top" style="padding:11px 14px; ${i ? 'border-top:1px solid #EEEEEE; ' : ''}font-family:${EMAIL_FONT}; font-size:14px; line-height:19px; font-weight:600; color:#1A1A1A;">${escapeEmailHtml(value)}</td>
+              </tr>`).join('\n              ')}
+            </table>`;
+
 /** @returns {Promise<{sent: boolean, to?: string, reason?: string}>} */
 export const sendDetailsConfirmation = async (business) => {
     const user = await User.findById(business.userId).select('email fullName').lean();
     const to = business.contact?.email || user?.email;
     if (!to) return { sent: false, reason: 'no_email' };
+
     const sentAt = new Date();
-    const api = process.env.BACKEND_URL || 'https://apis.findernate.com';
-    const link = (action) => `${api}/api/v1/kyc/business/confirm-details?b=${business._id}&a=${action}&s=${sentAt.getTime()}&t=${detailsToken(business._id, action, sentAt)}`;
     const snap = snapshotOf(business);
-    const rows = [
-        ['Business name', snap.businessName], ['Business type', snap.businessType], ['Category', snap.category],
-        ['Description', snap.description], ['Phone', snap.phone], ['Email', snap.email], ['Address', snap.address],
-        ['Registration', snap.registrationType ? (snap.registrationType === 'registered' ? 'Registered (GST)' : 'Unregistered') : null],
-        ['GSTIN', snap.gstNumber], ['PAN', snap.panNumber], ['Aadhaar', snap.aadhaar],
-    ].filter(([, v]) => v);
-    const button = (href, label, bg, fg) => `<a href="${href}" style="display:inline-block;padding:12px 22px;margin:4px 6px 4px 0;border-radius:8px;background:${bg};color:${fg};text-decoration:none;font-weight:600">${label}</a>`;
-    const html = `<div style="font-family:Arial,Helvetica,sans-serif;max-width:560px">
-<p>Hi ${escapeHtml(user?.fullName || '')},</p>
-<p>You submitted these business details on Findernate. Please check them and tell us if they are right.</p>
-<table cellpadding="8" style="border-collapse:collapse;width:100%;border:1px solid #eee">${rows.map(([k, v]) => `<tr><td style="border-bottom:1px solid #eee;width:35%"><b>${escapeHtml(k)}</b></td><td style="border-bottom:1px solid #eee">${escapeHtml(v)}</td></tr>`).join('')}</table>
-<p style="margin-top:18px">${button(link('confirm'), 'Confirm details', '#16a34a', '#fff')}${button(link('reject'), 'Reject, something is wrong', '#f3f4f6', '#111')}</p>
-<p style="color:#555;font-size:13px">Once you confirm, these details can no longer be edited. To change them later you will need to request re-verification.</p>
-</div>`;
-    const text = `You submitted these business details on Findernate:\n${rows.map(([k, v]) => `${k}: ${v}`).join('\n')}\n\nConfirm: ${link('confirm')}\nReject: ${link('reject')}\n\nOnce you confirm, these details can no longer be edited.`;
+    const hash = snapshotHash(snap);
+    const confirmUrl = detailsLink(business._id, 'confirm', sentAt.getTime(), hash);
+    const rejectUrl = detailsLink(business._id, 'reject', sentAt.getTime(), hash);
+    const rows = snapshotRows(snap);
+    const name = String(user?.fullName || '').trim();
+
+    const p = (text, { muted = false, top = 16 } = {}) =>
+        `<p style="margin:${top}px 0 0 0; font-family:${EMAIL_FONT}; font-size:${muted ? 13 : 15}px; line-height:${muted ? 20 : 23}px; color:${muted ? '#6B7280' : '#1A1A1A'};">${escapeEmailHtml(text)}</p>`;
+    const bodyHtml = [
+        p(name ? `Hi ${name},` : 'Hi,', { top: 0 }),
+        p('You submitted these business details on Findernate. Please check them and tell us whether they are right.'),
+        emailDetailRows(rows),
+        emailLinkButton(confirmUrl, 'Confirm details', { primary: true }),
+        emailLinkButton(rejectUrl, 'Something is wrong', { primary: false }),
+        p('Each button opens a page where you can check the details once more before anything is saved.', { muted: true }),
+        p('Once you confirm, these details can no longer be edited. To change them later you will need to request re-verification.', { muted: true, top: 8 }),
+    ].join('\n');
+    const html = renderEmail({
+        title: 'Please confirm your business details',
+        preheader: 'Check the business details you submitted on Findernate and confirm them.',
+        bodyHtml,
+    });
+    const text = [
+        name ? `Hi ${name},` : 'Hi,',
+        '',
+        'You submitted these business details on Findernate:',
+        ...rows.map(([k, v]) => `${k}: ${v}`),
+        '',
+        `Confirm details: ${confirmUrl}`,
+        `Something is wrong: ${rejectUrl}`,
+        '',
+        'Once you confirm, these details can no longer be edited. To change them later you will need to request re-verification.',
+    ].join('\n');
+
     const result = await sendEmail({ to, subject: 'Please confirm your business details on Findernate', html, text });
     if (result && result.success === false) {
         console.warn('[kyc] details confirmation email failed:', result.error);
         return { sent: false, to, reason: 'send_failed' };
     }
-    business.detailsConfirmation = { status: 'sent', sentAt, snapshot: snap };
-    await Business.updateOne({ _id: business._id }, { $set: { detailsConfirmation: business.detailsConfirmation } });
+    const record = { status: 'sent', sentAt, snapshot: snap };
+    business.detailsConfirmation = record;
+    await Business.updateOne({ _id: business._id }, { $set: { detailsConfirmation: record } });
     return { sent: true, to };
 };
 
@@ -333,27 +413,175 @@ export const getDetailsConfirmation = asyncHandler(async (req, res) => {
     }, 'OK'));
 });
 
-/** GET /kyc/business/confirm-details?b&a&s&t — the email link (public). */
-export const confirmDetailsFromEmail = asyncHandler(async (req, res) => {
-    const { b, a, s, t } = req.query;
-    const page = (title, msg) => res.status(200).type('html').send(`<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title><body style="font-family:system-ui;max-width:520px;margin:48px auto;padding:0 16px"><h2>${title}</h2><p>${msg}</p><p><a href="${process.env.FRONTEND_URL || 'https://findernate.com'}/settings/business">Open business settings</a></p></body>`);
-    if (!mongoose.Types.ObjectId.isValid(b) || !['confirm', 'reject'].includes(a)) return page('Link not valid', 'This link is broken.');
-    const business = await Business.findById(b);
-    const sentAt = business?.detailsConfirmation?.sentAt;
-    if (!business || !sentAt || String(new Date(sentAt).getTime()) !== String(s)) return page('Link expired', 'A newer email was sent, or this link was already used.');
-    const expected = detailsToken(business._id, a, sentAt);
-    if (!t || t.length !== expected.length || !crypto.timingSafeEqual(Buffer.from(t), Buffer.from(expected))) return page('Link not valid', 'This link is broken.');
-    if (business.detailsConfirmation.status !== 'sent') return page('Already answered', 'You have already responded to this email.');
+// ── The pages behind the email buttons ──────────────────────────────────────
 
-    if (a === 'confirm') {
-        await Business.updateOne({ _id: business._id }, { $set: { detailsLocked: true, 'detailsConfirmation.status': 'confirmed', 'detailsConfirmation.respondedAt': new Date() } });
-        await notifyActivity({ recipientId: business.userId, type: 'kyc', message: 'Your business details are confirmed. They can no longer be edited without re-verification.' });
-        return page('Details confirmed', 'Thank you. Your business details are confirmed and this information can no longer be edited. To change it later, request re-verification in business settings.');
-    }
-    await Business.updateOne({ _id: business._id }, { $set: { detailsLocked: false, 'detailsConfirmation.status': 'rejected', 'detailsConfirmation.respondedAt': new Date() } });
-    await notifyActivity({ recipientId: business.userId, type: 'kyc', message: 'You said your business details are wrong. Please correct them in business settings and submit again.' });
-    return page('Thanks for telling us', 'Please correct your details in business settings and submit them again.');
+const sendDetailsPage = (res, page, status = 200) => res
+    .status(status)
+    .set('Cache-Control', 'no-store')
+    .type('html')
+    .send(renderDetailsPage({ settingsUrl: `${publicSiteUrl()}/settings/business`, ...page }));
+
+const msOrNull = (date) => (date ? new Date(date).getTime() : null);
+
+const linkStateOf = (business) => ({
+    locked: !!business.detailsLocked,
+    status: business.detailsConfirmation?.status || 'none',
+    latestSentAtMs: msOrNull(business.detailsConfirmation?.sentAt),
+    respondedAtMs: msOrNull(business.detailsConfirmation?.respondedAt),
+    currentHash: snapshotHash(snapshotOf(business)),
 });
+
+const CONFIRMED_PAGE = {
+    title: 'Details confirmed',
+    tone: 'success',
+    message: 'Thank you. Your business details are confirmed and can no longer be edited. To change them later, request re-verification in business settings.',
+};
+
+/**
+ * Checks the link and loads the business. Sends the right page itself when
+ * the link cannot be used and returns null.
+ */
+const resolveDetailsLink = async (params, res) => {
+    const link = readDetailsLink(params, signingSecret());
+    if (!link.ok) {
+        sendDetailsPage(res, {
+            title: 'This link is not valid',
+            tone: 'warning',
+            message: 'The link is incomplete or was changed on the way. Open the email again and tap the button, or ask for a new email with "Resend email" in business settings.',
+        });
+        return null;
+    }
+    const business = await Business.findById(link.businessId);
+    if (!business) {
+        sendDetailsPage(res, {
+            title: 'Business not found',
+            tone: 'warning',
+            message: 'This business profile no longer exists, so there is nothing to confirm.',
+        });
+        return null;
+    }
+    const outcome = decideDetailsLink(link, linkStateOf(business));
+    if (outcome === 'ask') return { link, business };
+
+    if (outcome === 'already_confirmed') {
+        sendDetailsPage(res, { ...CONFIRMED_PAGE, rows: snapshotRows(snapshotOf(business)) });
+    } else if (outcome === 'confirmed_cannot_reject') {
+        sendDetailsPage(res, {
+            title: 'These details are already confirmed',
+            tone: 'info',
+            message: 'You confirmed these details earlier, so they can no longer be edited. To change them, request re-verification in business settings.',
+        });
+    } else if (outcome === 'already_rejected') {
+        sendDetailsPage(res, {
+            title: 'Thanks, we have noted it',
+            tone: 'info',
+            message: 'You already told us these details are wrong. Correct them in business settings and save; we will email you the new details to confirm.',
+        });
+    } else if (outcome === 'expired') {
+        sendDetailsPage(res, {
+            title: 'This email is too old',
+            tone: 'warning',
+            message: 'This link is more than 60 days old. Open business settings (or the Findernate app) and tap "Resend email" to get a new one.',
+        });
+    } else {
+        const to = maskEmail(await confirmationRecipient(business).catch(() => null));
+        sendDetailsPage(res, {
+            title: 'This email is out of date',
+            tone: 'warning',
+            message: `Your business details were changed after this email was sent. Please use the most recent email${to ? ` we sent to ${to}` : ''}, or tap "Resend email" in business settings.`,
+        });
+    }
+    return null;
+};
+
+const detailsPageFailed = (res, error) => {
+    console.error('[kyc] details confirmation page failed:', error?.message || error);
+    if (res.headersSent) return;
+    sendDetailsPage(res, {
+        title: 'Something went wrong',
+        tone: 'warning',
+        message: 'We could not load this page right now. Please try again in a minute.',
+    }, 500);
+};
+
+/**
+ * GET /kyc/business/confirm-details?b&a&s[&h]&t — the email button (public).
+ *
+ * Shows the details and asks. Nothing is saved until the button on this page
+ * is pressed: mail scanners open every link in an email, and confirming locks
+ * the details for good.
+ */
+export const confirmDetailsFromEmail = async (req, res) => {
+    try {
+        const resolved = await resolveDetailsLink(req.query, res);
+        if (!resolved) return;
+        const { link, business } = resolved;
+        const rows = snapshotRows(snapshotOf(business));
+        const fields = { b: link.businessId, a: link.action, s: String(link.sentAtMs), ...(link.hash ? { h: link.hash } : {}), t: link.token };
+        const other = link.action === 'confirm' ? 'reject' : 'confirm';
+        const otherUrl = detailsLink(link.businessId, other, link.sentAtMs, link.hash);
+
+        if (link.action === 'confirm') {
+            sendDetailsPage(res, {
+                title: 'Confirm your business details',
+                tone: 'info',
+                message: 'Please check the details below. If everything is right, confirm them.',
+                rows,
+                note: 'Once you confirm, these details can no longer be edited. To change them later you will need to request re-verification.',
+                form: { action: CONFIRM_PATH, fields, label: 'Confirm details', kind: 'confirm' },
+                secondary: { href: otherUrl, label: 'Something is wrong' },
+            });
+        } else {
+            sendDetailsPage(res, {
+                title: 'Is something wrong?',
+                tone: 'info',
+                message: 'If any of the details below is not right, tell us. You can then correct it in business settings and we will email you the new details.',
+                rows,
+                form: { action: CONFIRM_PATH, fields, label: 'Yes, something is wrong', kind: 'reject' },
+                secondary: { href: otherUrl, label: 'No, the details are right' },
+            });
+        }
+    } catch (error) {
+        detailsPageFailed(res, error);
+    }
+};
+
+/** POST /kyc/business/confirm-details — the button on that page (public). Saves the answer. */
+export const submitDetailsFromEmail = async (req, res) => {
+    try {
+        const params = req.body && Object.keys(req.body).length ? req.body : req.query;
+        const resolved = await resolveDetailsLink(params, res);
+        if (!resolved) return;
+        const { link, business } = resolved;
+        const now = new Date();
+        const notify = (message) => notifyActivity({ recipientId: business.userId, type: 'kyc', message })
+            // The answer is saved; a notification that cannot be stored must not
+            // turn the page into an error.
+            .catch((error) => console.warn('[kyc] details notification failed:', error?.message));
+
+        if (link.action === 'confirm') {
+            await Business.updateOne({ _id: business._id }, {
+                $set: { detailsLocked: true, 'detailsConfirmation.status': 'confirmed', 'detailsConfirmation.respondedAt': now },
+            });
+            await notify('Your business details are confirmed. They can no longer be edited without re-verification.');
+            sendDetailsPage(res, { ...CONFIRMED_PAGE, rows: snapshotRows(snapshotOf(business)) });
+            return;
+        }
+
+        await Business.updateOne({ _id: business._id }, {
+            $set: { detailsLocked: false, 'detailsConfirmation.status': 'rejected', 'detailsConfirmation.respondedAt': now },
+        });
+        await notify('You said your business details are wrong. Please correct them in business settings and submit again.');
+        sendDetailsPage(res, {
+            title: 'Thanks for telling us',
+            tone: 'info',
+            message: 'Please correct your details in business settings and save them. We will email you the new details to confirm.',
+        });
+    } catch (error) {
+        detailsPageFailed(res, error);
+    }
+};
+
 
 /** Used by the business profile update: refuses changes to locked fields. */
 export const assertNotLocked = (business, touched) => {
