@@ -36,13 +36,16 @@ import { User } from "../models/user.models.js";
 import Chat from "../models/chat.models.js";
 import Message from "../models/message.models.js";
 import socketManager from "../config/socket.js";
+import { publicApiUrl } from "../utils/publicUrls.js";
 
 // Always use configured FRONTEND_URL for payment links (never use request origin)
 const getFrontendUrl = () => {
     return process.env.FRONTEND_URL || 'https://findernate.com';
 };
 
-const getBackendUrl = () => process.env.BACKEND_URL || 'https://apis.findernate.com';
+// Cashfree sends its payment confirmations (notify_url) here, so a BACKEND_URL
+// pointing at the host that does not exist must not be used (publicUrls.js).
+const getBackendUrl = () => publicApiUrl();
 
 // Maps internal 'held' status to 'paid' for user-facing responses.
 // Admin sees 'held' in DB so they can manually transfer funds.

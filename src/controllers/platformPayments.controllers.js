@@ -20,6 +20,7 @@ import {
 } from '../config/cashfree.config.js';
 import { isGooglePlayConfigured, getProductPurchase, consumeProductPurchase } from '../config/googlePlay.config.js';
 import { requireCashfreeWebhookSignature } from '../utils/cashfreeWebhook.utils.js';
+import { publicApiUrl } from '../utils/publicUrls.js';
 
 /**
  * Payments to Findernate itself (Phase 4): ads (#27), the re-KYC fee (#74),
@@ -142,7 +143,8 @@ export const createPlatformCheckout = asyncHandler(async (req, res) => {
     const user = await User.findById(userId).select('fullName username email phoneNumber').lean();
     const orderId = generateCashfreeOrderId();
     const FRONTEND_URL = process.env.FRONTEND_URL || 'https://findernate.com';
-    const BACKEND_URL = process.env.BACKEND_URL || 'https://apis.findernate.com';
+    // Cashfree's confirmation goes here: never the host that does not exist.
+    const BACKEND_URL = publicApiUrl();
     const cf = await createCashfreeOrder({
         orderId,
         amount: price.total,

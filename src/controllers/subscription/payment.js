@@ -32,6 +32,7 @@ import {
     toPublicSubscription
 } from './activation.js';
 import { playRowStillRenews } from './googlePlay.js';
+import { publicApiUrl } from '../../utils/publicUrls.js';
 
 // Which plan a Cashfree order was actually for. Derived from the order note we
 // set at creation time, falling back to the amount paid — never from the client.
@@ -214,7 +215,9 @@ export const createSubscriptionOrder = asyncHandler(async (req, res) => {
 
     const cashfreeOrderId = generateCashfreeOrderId();
     const FRONTEND_URL = process.env.FRONTEND_URL || 'https://findernate.com';
-    const BACKEND_URL = process.env.BACKEND_URL || 'https://api.findernate.com';
+    // Cashfree's confirmation goes here. The old fallback was the host that
+    // does not exist (api.findernate.com); publicApiUrl() never returns it.
+    const BACKEND_URL = publicApiUrl();
 
     try {
         const cfOrder = await createCashfreeOrder({

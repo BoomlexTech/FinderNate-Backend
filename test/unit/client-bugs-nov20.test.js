@@ -149,6 +149,22 @@ test('bug 1: the page asks with a POST form and escapes what it shows', () => {
     assert.ok(!renderDetailsPage({ title: 'Details confirmed', message: 'Thank you', tone: 'success' }).includes('<form'));
 });
 
+test('bug 1: payment confirmations from Cashfree never go to the host that does not exist', async () => {
+    const { readFile } = await import('node:fs/promises');
+    const files = [
+        'controllers/cashfree.payment.controller.js',
+        'controllers/payments.controllers.js',
+        'controllers/platformPayments.controllers.js',
+        'controllers/subscription/payment.js',
+    ];
+    for (const file of files) {
+        const source = await readFile(new URL(`../../src/${file}`, import.meta.url), 'utf8');
+        assert.doesNotMatch(source, /process\.env\.BACKEND_URL/, `${file} reads BACKEND_URL directly`);
+        assert.match(source, /publicApiUrl\(\)/, `${file} does not use publicApiUrl()`);
+        assert.doesNotMatch(source, /['"`]https:\/\/api\.findernate\.com/, `${file} names the dead host`);
+    }
+});
+
 // ── Bug 2: "an error occurs" after the KYC OTP ──────────────────────────────
 
 const stored = (kyc) => Business.hydrate({

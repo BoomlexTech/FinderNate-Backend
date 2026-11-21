@@ -29,15 +29,15 @@ export const publicApiUrl = (configured = process.env.BACKEND_URL) => {
     try {
         url = new URL(raw);
     } catch {
-        warnOnce(`BACKEND_URL="${raw}" is not a web address — using ${WORKING_API_URL} for links in emails.`);
+        warnOnce(`BACKEND_URL="${raw}" is not a web address — using ${WORKING_API_URL} for links in emails and payment confirmations.`);
         return WORKING_API_URL;
     }
     if (!/^https?:$/.test(url.protocol)) {
-        warnOnce(`BACKEND_URL="${raw}" is not an http(s) address — using ${WORKING_API_URL} for links in emails.`);
+        warnOnce(`BACKEND_URL="${raw}" is not an http(s) address — using ${WORKING_API_URL} for links in emails and payment confirmations.`);
         return WORKING_API_URL;
     }
     if (DEAD_API_HOSTS.has(url.hostname.toLowerCase())) {
-        warnOnce(`BACKEND_URL points at ${url.hostname}, which does not exist — using ${WORKING_API_URL} for links in emails. Set BACKEND_URL=${WORKING_API_URL}.`);
+        warnOnce(`BACKEND_URL points at ${url.hostname}, which does not exist — using ${WORKING_API_URL} for links in emails and payment confirmations. Set BACKEND_URL=${WORKING_API_URL}.`);
         return WORKING_API_URL;
     }
     return raw;

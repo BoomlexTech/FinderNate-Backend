@@ -40,9 +40,12 @@ import PaymentLink from "../models/paymentLink.models.js";
 import EscrowWallet from "../models/escrowWallet.models.js";
 import Post from "../models/userPost.models.js";
 import { User } from "../models/user.models.js";
+import { publicApiUrl } from "../utils/publicUrls.js";
 
 const getFrontendUrl = () => process.env.FRONTEND_URL || 'https://findernate.com';
-const getBackendUrl  = () => process.env.BACKEND_URL  || 'https://apis.findernate.com';
+// Cashfree sends its payment confirmations (notify_url) here, so a BACKEND_URL
+// pointing at the host that does not exist must not be used (publicUrls.js).
+const getBackendUrl  = () => publicApiUrl();
 
 // How long a Cashfree checkout session stays payable.
 const CF_SESSION_MINUTES = 20;
