@@ -211,10 +211,17 @@ export const businessAadhaarVerify = asyncHandler(async (req, res) => {
 // ─── Regular users' Aadhaar (#80 listings) ──────────────────────────────────
 
 /** POST /kyc/me/aadhaar/otp  { aadhaar } */
+// Each step is logged with its outcome (never the number or the OTP), the same
+// as the business check: when a seller says "it failed after the OTP", the
+// server log shows which step and why.
 export const userAadhaarOtp = asyncHandler(async (req, res) => {
     const r = await sendAadhaarOtp(req.body?.aadhaar);
     if (!r.available) throw new ApiError(503, 'Aadhaar verification is not available yet');
-    if (!r.ok) throw new ApiError(400, r.message || "Couldn't send the OTP");
+    if (!r.ok) {
+        console.warn(`[kyc] user ${req.user._id}: Aadhaar OTP not sent - ${r.message || 'no reason given'}`);
+        throw new ApiError(400, r.message || "Couldn't send the OTP");
+    }
+    console.log(`[kyc] user ${req.user._id}: Aadhaar OTP sent`);
     return res.status(200).json(new ApiResponse(200, { refId: r.refId, last4: r.last4 }, 'OTP sent'));
 });
 
@@ -222,10 +229,22 @@ export const userAadhaarOtp = asyncHandler(async (req, res) => {
 export const userAadhaarVerify = asyncHandler(async (req, res) => {
     const r = await verifyAadhaarOtp(req.body?.refId, req.body?.otp);
     if (!r.available) throw new ApiError(503, 'Aadhaar verification is not available yet');
-    if (!r.valid) throw new ApiError(400, r.message || 'The OTP is not correct');
+    if (!r.valid) {
+        console.warn(`[kyc] user ${req.user._id}: Aadhaar OTP not accepted - ${r.message || 'no reason given'}`);
+        throw new ApiError(400, r.message || 'The OTP is not correct');
+    }
     await User.updateOne({ _id: req.user._id }, {
-        $set: { aadhaarVerification: { status: 'verified', name: r.name, last4: String(req.body?.last4 || '').slice(-4), refId: r.refId, verifiedAt: new Date() } },
+        $set: {
+            aadhaarVerification: {
+                status: 'verified',
+                name: r.name,
+                last4: String(req.body?.last4 || '').replace(/\D/g, '').slice(-4),
+                refId: r.refId,
+                verifiedAt: new Date(),
+            },
+        },
     });
+    console.log(`[kyc] user ${req.user._id}: Aadhaar OTP verified`);
     return res.status(200).json(new ApiResponse(200, { verified: true }, 'Aadhaar verified'));
 });
 

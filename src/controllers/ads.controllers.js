@@ -86,6 +86,7 @@ export const createAd = asyncHandler(async (req, res) => {
         requestedStartAt: startAt && startAt > new Date() ? startAt : null,
         status: 'draft',
     });
+    console.log(`[ads] user ${req.user._id}: ad ${ad._id} created (${type}, ${days} day${days === 1 ? '' : 's'}, ${price.total} incl. GST${postId ? `, post ${postId}` : ''})`);
     return res.status(201).json(new ApiResponse(201, ad, 'Ad created. Pay to schedule it.'));
 });
 

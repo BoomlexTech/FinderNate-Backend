@@ -85,6 +85,7 @@ const fulfil = async (purchase) => {
         { new: true }
     );
     if (!claimed) return;
+    console.log(`[platform-pay] ${purchase.kind}${purchase.refId ? ` ${purchase.refId}` : ''}: paid through ${purchase.provider}, fulfilling`);
     const now = new Date();
     if (purchase.kind === 'ad') {
         const ad = await AdCampaign.findById(purchase.refId);
@@ -164,6 +165,7 @@ export const createPlatformCheckout = asyncHandler(async (req, res) => {
         provider: 'cashfree', cashfreeOrderId: orderId,
     });
     if (kind === 'ad') await AdCampaign.updateOne({ _id: refId }, { $set: { status: 'awaiting_payment' } });
+    console.log(`[platform-pay] ${kind}${refId ? ` ${refId}` : ''}: Cashfree checkout started (${orderId}, ${price.total} incl. GST)`);
 
     return res.status(200).json(new ApiResponse(200, {
         purchaseId: purchase._id,

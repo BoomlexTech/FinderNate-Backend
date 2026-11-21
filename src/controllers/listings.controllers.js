@@ -66,6 +66,7 @@ export const createListing = asyncHandler(async (req, res) => {
         amount: price.amount, gstPercent: price.gstPercent, gst: price.gst, total: price.total,
         status: flags.length ? 'flagged' : 'awaiting_payment', flags,
     });
+    console.log(`[listing] user ${req.user._id}: listing ${listing._id} for post ${postId} (${days} days) - ${listing.status}${flags.length ? ` (${flags.join('; ')})` : ''}`);
     return res.status(201).json(new ApiResponse(201, listing, flags.length
         ? 'We need to check this listing first. You will be notified.'
         : 'Ready to pay'));
