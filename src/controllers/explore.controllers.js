@@ -12,10 +12,11 @@ import { filterBusinessPostsByPaymentPlan } from "../utils/businessPlan.utils.js
 import { batchIsLikedByUser, batchGetLikedByUsers, batchGetLikesCount, batchSharedCount } from "../utils/postEngagement.utils.js";
 import { getLikedByPreview } from "../utils/likedByPreview.utils.js";
 import { getLiveBoosts, isCorporateBusinessPlan, orderPaidForExplore, recordBoostImpressions } from "../utils/boostServing.js";
+import { feedSeed, seededShuffler } from "../utils/feedOrder.utils.js";
 import mongoose from "mongoose";
 
 export const getExploreFeed = asyncHandler(async (req, res) => {
-    let { contentType, types, postType, sortBy = "time", page = 1, limit = 10 } = req.query;
+    let { contentType, types, postType, sortBy = "time", page = 1, limit = 10, seed } = req.query;
     // `types` is the legacy name the mobile app sends. It was never read here,
     // so contentType silently fell back to "all" on every app request — and the
     // "all" branch used to strip every vibe out of the feed.
@@ -133,13 +134,11 @@ export const getExploreFeed = asyncHandler(async (req, res) => {
         }
     });
 
-    // Shuffle arrays separately
-    function shuffleArray(arr) {
-        return arr
-            .map(value => ({ value, sort: Math.random() }))
-            .sort((a, b) => a.sort - b.sort)
-            .map(({ value }) => value);
-    }
+    // Shuffle arrays separately — in one stable order per browsing session
+    // (see feedOrder.utils.js). Math.random here reshuffled the candidates on
+    // every request, so the pages overlapped: posts from page 1 came back on
+    // page 2 and others were never served.
+    const shuffleArray = seededShuffler(feedSeed({ viewerId, clientSeed: seed }));
 
     const shuffledRegularPosts = shuffleArray(regularPosts);
     // Paid-author posts take 1 of every 5 slots below, in this order: boosted
