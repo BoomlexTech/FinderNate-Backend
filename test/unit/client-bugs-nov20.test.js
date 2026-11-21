@@ -406,3 +406,70 @@ test('bug 7: a really busy person gets a message the caller can read', () => {
     assert.equal(busyMessage({ callerBusy: false, receiverName: 'Vinayak' }), 'Vinayak is on another call. Please try again in a little while.');
     assert.match(busyMessage({ callerBusy: false }), /^This person is on another call/);
 });
+
+// ── Bug 1 again (21 Nov, live logs): the button on the confirm page ─────────
+
+test('bug 1: the confirm page can post its own form although the browser sends "Origin: null"', async () => {
+    const { default: express } = await import('express');
+    const { default: cors } = await import('cors');
+    const { default: helmet } = await import('helmet');
+    const http = await import('node:http');
+    const { allowOwnFormPosts } = await import('../../src/middlewares/ownFormPosts.js');
+
+    // The same shape as app.js: helmet, then the allow-list that throws for an
+    // origin it does not know, then the routes and an error handler.
+    const build = (withFix) => {
+        const app = express();
+        app.use(helmet({ contentSecurityPolicy: false, crossOriginEmbedderPolicy: false }));
+        if (withFix) app.use(allowOwnFormPosts);
+        app.use(cors({
+            origin: (origin, cb) => (!origin || origin === 'https://findernate.com' ? cb(null, true) : cb(new Error('Not allowed by CORS'))),
+            credentials: true,
+        }));
+        app.use(express.urlencoded({ extended: true }));
+        app.post('/api/v1/kyc/business/confirm-details', (req, res) => res.status(200).send(`saved ${req.body.a}`));
+        app.post('/api/v1/posts', (_req, res) => res.status(200).send('posted'));
+        app.use((err, _req, res, _next) => res.status(500).send(err.message));
+        return app;
+    };
+    const post = (app, path, origin) => new Promise((resolve, reject) => {
+        const server = app.listen(0, () => {
+            const body = 'a=confirm';
+            const req = http.request({
+                port: server.address().port, path, method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Content-Length': Buffer.byteLength(body), ...(origin ? { Origin: origin } : {}) },
+            }, (res) => {
+                let text = '';
+                res.on('data', (c) => { text += c; });
+                res.on('end', () => { server.close(); resolve({ status: res.statusCode, text, referrerPolicy: res.headers['referrer-policy'] }); });
+            });
+            req.on('error', (e) => { server.close(); reject(e); });
+            req.end(body);
+        });
+    });
+
+    // What happened live: helmet asks for no referrer, so the form post
+    // carries "Origin: null", and the allow-list answered with a 500.
+    const before = await post(build(false), '/api/v1/kyc/business/confirm-details', 'null');
+    assert.equal(before.referrerPolicy, 'no-referrer');
+    assert.equal(before.status, 500);
+
+    const after = await post(build(true), '/api/v1/kyc/business/confirm-details', 'null');
+    assert.equal(after.status, 200);
+    assert.equal(after.text, 'saved confirm');
+
+    // Nothing else is opened up: other routes still refuse "null", and the
+    // confirm path still refuses a foreign site.
+    assert.equal((await post(build(true), '/api/v1/posts', 'null')).status, 500);
+    assert.equal((await post(build(true), '/api/v1/kyc/business/confirm-details', 'https://evil.example')).status, 500);
+    assert.equal((await post(build(true), '/api/v1/posts', 'https://findernate.com')).status, 200);
+});
+
+test('bug 1: app.js lets its own form posts through before the CORS allow-list', async () => {
+    const { readFile } = await import('node:fs/promises');
+    const src = await readFile(new URL('../../src/app.js', import.meta.url), 'utf8');
+    const fix = src.indexOf('app.use(allowOwnFormPosts)');
+    const corsAt = src.indexOf('app.use(cors(');
+    assert.ok(fix > 0, 'allowOwnFormPosts is mounted');
+    assert.ok(fix < corsAt, 'and before cors()');
+});

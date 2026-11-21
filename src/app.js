@@ -8,6 +8,7 @@ import { errorHandler } from './middlewares/errorHandler.js';
 import { requestContext, requestLogger } from './middlewares/requestContext.js';
 import { redisHealthCheck } from './config/redis.config.js';
 import { generalRateLimit, healthCheckRateLimit } from './middlewares/rateLimiter.middleware.js';
+import { allowOwnFormPosts } from './middlewares/ownFormPosts.js';
 
 const app = express();
 
@@ -74,6 +75,9 @@ const allowedOrigins = [
         ...(process.env.ADDITIONAL_CORS_ORIGINS ? process.env.ADDITIONAL_CORS_ORIGINS.split(',') : [])
 ];
 
+// The pages this server renders (the business-details email's buttons) post
+// their own forms with "Origin: null"; see middlewares/ownFormPosts.js.
+app.use(allowOwnFormPosts);
 
 app.use(cors({
         origin: function (origin, callback) {
