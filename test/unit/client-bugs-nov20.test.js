@@ -209,6 +209,39 @@ for (const [label, kyc] of CASES) {
     });
 }
 
+test('bug 2: an older business row with values the schema now refuses can still submit KYC', () => {
+    // Saved before today's rules: an empty bank account type and a retired plan name.
+    const business = Business.hydrate({
+        _id: new mongoose.Types.ObjectId(),
+        userId: new mongoose.Types.ObjectId(),
+        businessName: 'Sharma Stores',
+        plan: 'free',
+        bankDetails: { accountType: '' },
+        kyc: { checks: { aadhaar: { valid: true, name: 'A SHARMA', last4: '1234' } } },
+    });
+    // What submitBusinessKyc changes before it saves.
+    business.registrationType = 'unregistered';
+    business.panNumber = 'ABCDE1234F';
+    business.set('kyc.submittedAt', new Date());
+    business.set('kyc.status', 'needs_review');
+    business.set('kyc.reasons', ['PAN and Aadhaar names do not match']);
+
+    // Checking the whole row fails on fields the KYC never touched…
+    const full = business.validateSync();
+    assert.ok(full, 'expected the old row to fail a full validation');
+    assert.deepEqual(Object.keys(full.errors).sort(), ['bankDetails.accountType', 'plan']);
+    // …so the KYC save checks only what it changed.
+    assert.equal(business.validateSync(undefined, { validateModifiedOnly: true }), undefined);
+});
+
+test('bug 2: the KYC submit saves with validateModifiedOnly', async () => {
+    const { readFile } = await import('node:fs/promises');
+    const source = await readFile(new URL('../../src/controllers/kyc.controllers.js', import.meta.url), 'utf8');
+    const submit = source.slice(source.indexOf('export const submitBusinessKyc'), source.indexOf('export const businessAadhaarOtp'));
+    assert.match(submit, /business\.save\(\{ validateModifiedOnly: true \}\)/);
+    assert.doesNotMatch(submit, /business\.save\(\)/);
+});
+
 test('bug 2: a check keeps the outcome and names only', () => {
     const at = new Date('2026-11-20T00:00:00Z');
     assert.deepEqual(

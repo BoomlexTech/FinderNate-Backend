@@ -153,9 +153,15 @@ export const submitBusinessKyc = asyncHandler(async (req, res) => {
         business.verificationStatus = 'approved';
         business.isVerified = true;
     }
-    await business.save();
-    await refreshStoredTier(req.user._id);
-    await notifyKyc(req.user._id, decision.status, decision.reasons);
+    // Only what this request changed is validated: an older business row may
+    // hold a value today's schema no longer accepts (an empty bank account
+    // type, a retired plan name), and that must not turn a finished check —
+    // with the Aadhaar OTP already used up — into an error.
+    await business.save({ validateModifiedOnly: true });
+    console.log(`[kyc] business ${business._id} submitted (${registrationType}): ${decision.status}${decision.reasons.length ? ` - ${decision.reasons.join('; ')}` : ''}`);
+    // The result is saved. Nothing after this may turn the answer into an error.
+    await refreshStoredTier(req.user._id).catch((error) => console.warn('[kyc] visibility refresh failed:', error?.message));
+    await notifyKyc(req.user._id, decision.status, decision.reasons).catch((error) => console.warn('[kyc] notification failed:', error?.message));
     if (decision.status === 'verified') await maybeSendDetailsConfirmation(business).catch(() => {});
 
     return res.status(200).json(new ApiResponse(200, publicKyc(business), decision.status === 'verified' ? 'Your business is verified' : 'Submitted for review'));
@@ -163,10 +169,14 @@ export const submitBusinessKyc = asyncHandler(async (req, res) => {
 
 /** POST /kyc/business/aadhaar/otp  { aadhaar } (unregistered businesses) */
 export const businessAadhaarOtp = asyncHandler(async (req, res) => {
-    await loadBusiness(req.user._id);
+    const business = await loadBusiness(req.user._id);
     const r = await sendAadhaarOtp(req.body?.aadhaar);
     if (!r.available) throw new ApiError(503, 'Aadhaar verification is not available yet');
-    if (!r.ok) throw new ApiError(400, r.message || "Couldn't send the OTP");
+    if (!r.ok) {
+        console.warn(`[kyc] business ${business._id}: Aadhaar OTP not sent - ${r.message || 'no reason given'}`);
+        throw new ApiError(400, r.message || "Couldn't send the OTP");
+    }
+    console.log(`[kyc] business ${business._id}: Aadhaar OTP sent`);
     return res.status(200).json(new ApiResponse(200, { refId: r.refId, last4: r.last4 }, 'OTP sent to the mobile linked to your Aadhaar'));
 });
 
@@ -175,7 +185,10 @@ export const businessAadhaarVerify = asyncHandler(async (req, res) => {
     const business = await loadBusiness(req.user._id);
     const r = await verifyAadhaarOtp(req.body?.refId, req.body?.otp);
     if (!r.available) throw new ApiError(503, 'Aadhaar verification is not available yet');
-    if (!r.valid) throw new ApiError(400, r.message || 'The OTP is not correct');
+    if (!r.valid) {
+        console.warn(`[kyc] business ${business._id}: Aadhaar OTP not accepted - ${r.message || 'no reason given'}`);
+        throw new ApiError(400, r.message || 'The OTP is not correct');
+    }
     // Written to its own path with a plain update: the OTP has just been used
     // up at UIDAI, so nothing else about the business document (an old row
     // that fails today's validators, the other checks) may stop the result
@@ -191,6 +204,7 @@ export const businessAadhaarVerify = asyncHandler(async (req, res) => {
             }),
         },
     });
+    console.log(`[kyc] business ${business._id}: Aadhaar OTP verified`);
     return res.status(200).json(new ApiResponse(200, { valid: true, name: r.name }, 'Aadhaar verified'));
 });
 
