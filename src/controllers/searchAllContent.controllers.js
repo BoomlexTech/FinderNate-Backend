@@ -18,6 +18,7 @@ import {
     isCorporateBusinessPlan
 } from '../utils/boostServing.js';
 import { publicUserPopulate, scrubHiddenLocations, visibleLocationClauses } from "../utils/profilePrivacy.utils.js";
+import { createPostVisibilityChecker } from "./post/visibility.js";
 
 export const searchAllContent = async (req, res) => {
     try {
@@ -569,8 +570,19 @@ export const searchAllContent = async (req, res) => {
             });
         }
 
+        // Only what this viewer may open: a private account's posts and reels
+        // are for its followers (and the account itself), and a post set to
+        // private is for its author. Search used to show both to everyone,
+        // signed in or not, while opening the post answered "Post not found"
+        // (found 21 Nov 2026). The cache key includes the viewer, so a
+        // per-viewer filter here is safe.
+        const canSee = createPostVisibilityChecker(req.user?._id || null);
+        const merged = [...scoredPosts, ...scoredReels];
+        const mayOpen = await Promise.all(merged.map((item) => canSee(item)));
+
         //  Merge + sort: relevance band first, popularity only inside a band.
-        const combinedContent = [...scoredPosts, ...scoredReels]
+        const combinedContent = merged
+            .filter((_, i) => mayOpen[i])
             .sort((a, b) => (b._relevance - a._relevance) || (b._score - a._score));
 
         const paginatedContent = combinedContent.slice(skip, skip + limit);
@@ -632,16 +644,29 @@ export const searchAllContent = async (req, res) => {
         const limitedUsers = allUsers.slice(0, limit);
 
         // Fetch posts for each user found and include business information
+        const viewerIdStr = req.user?._id ? req.user._id.toString() : null;
         const usersWithPosts = await Promise.all(limitedUsers.map(async (user) => {
-            const userPosts = await Post.find({ userId: user._id })
-                .sort({ createdAt: -1 })
-                .limit(10) // Limit to 10 recent posts per user
-                .lean();
+            // The recent posts and reels shown with a user result follow the
+            // same rule as opening them: none from a private account the viewer
+            // does not follow, and never a post set to private. They used to be
+            // the account's latest ten posts and five reels whatever their
+            // settings, to anyone who typed the name.
+            const isSelf = viewerIdStr !== null && viewerIdStr === user._id.toString();
+            const accountVisible = isSelf || await canSee({ userId: user._id });
 
-            const userReels = await Reel.find({ userId: user._id })
-                .sort({ createdAt: -1 })
-                .limit(5) // Limit to 5 recent reels per user
-                .lean();
+            const userPosts = accountVisible
+                ? await Post.find({ userId: user._id, ...(isSelf ? {} : { 'settings.privacy': { $ne: 'private' } }) })
+                    .sort({ createdAt: -1 })
+                    .limit(10) // Limit to 10 recent posts per user
+                    .lean()
+                : [];
+
+            const userReels = accountVisible
+                ? await Reel.find({ userId: user._id, ...(isSelf ? {} : { isPublic: true }) })
+                    .sort({ createdAt: -1 })
+                    .limit(5) // Limit to 5 recent reels per user
+                    .lean()
+                : [];
 
             // Check if user has a business profile
             const businessProfile = await Business.findOne({ userId: user._id })
