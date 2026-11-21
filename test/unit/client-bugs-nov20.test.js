@@ -473,3 +473,20 @@ test('bug 1: app.js lets its own form posts through before the CORS allow-list',
     assert.ok(fix > 0, 'allowOwnFormPosts is mounted');
     assert.ok(fix < corsAt, 'and before cors()');
 });
+
+// ── 49th (21 Nov, live log): duets need FFmpeg on the server ────────────────
+
+test('49th: the server image installs FFmpeg, so duets, the editor and music mixing work', async () => {
+    const { readFile } = await import('node:fs/promises');
+    const config = JSON.parse(await readFile(new URL('../../railpack.json', import.meta.url), 'utf8'));
+    const apt = config?.deploy?.aptPackages || [];
+    assert.ok(apt.includes('ffmpeg'), 'ffmpeg is an apt package of the final image');
+    assert.ok(apt.includes('...'), "Railpack's own runtime packages are kept");
+});
+
+test('49th: a failed FFmpeg check is asked again later instead of lasting until the next deploy', async () => {
+    const { readFile } = await import('node:fs/promises');
+    const src = await readFile(new URL('../../src/services/ffmpeg.service.js', import.meta.url), 'utf8');
+    assert.match(src, /RECHECK_MISSING_MS/);
+    assert.match(src, /availability === true\) return true/);
+});

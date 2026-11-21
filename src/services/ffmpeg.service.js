@@ -17,6 +17,7 @@ import { parseProbe, parseVolumeDetect } from '../utils/phase5.rules.js';
 
 let resolvedPath = null;
 let availability = null;
+let checkedAt = 0;
 
 export const resolveFfmpegPath = async () => {
     if (resolvedPath) return resolvedPath;
@@ -30,7 +31,7 @@ export const resolveFfmpegPath = async () => {
 };
 
 /** For tests: forget what was found. */
-export const resetFfmpegCache = () => { resolvedPath = null; availability = null; };
+export const resetFfmpegCache = () => { resolvedPath = null; availability = null; checkedAt = 0; };
 
 const tail = (text, max = 4000) => (text.length > max ? text.slice(text.length - max) : text);
 
@@ -108,14 +109,29 @@ export const runFfmpegOrThrow = async (args, opts) => {
     return res;
 };
 
+/**
+ * Whether FFmpeg runs. A yes is kept; a no is asked again after a few minutes,
+ * so one slow or failed first check (a busy start-up) does not switch the
+ * editor, music mixing and duets off until the next deploy.
+ *
+ * The server image gets FFmpeg from railpack.json (apt package). Before that it
+ * relied on the optional ffmpeg-static package, whose binary is downloaded from
+ * GitHub while installing; when that download did not happen the build still
+ * passed and every duet failed with "Video editing is not available right now"
+ * (client item 49th, 21 Nov live log: "FFmpeg was not found").
+ */
+const RECHECK_MISSING_MS = 5 * 60 * 1000;
+
 export const isFfmpegAvailable = async () => {
-    if (availability !== null) return availability;
+    if (availability === true) return true;
+    if (availability === false && Date.now() - checkedAt < RECHECK_MISSING_MS) return false;
     try {
         const res = await runFfmpeg(['-hide_banner', '-version'], { timeoutMs: 8000 });
         availability = res.code === 0 && /ffmpeg version/i.test(res.stdout + res.stderr);
     } catch {
         availability = false;
     }
+    checkedAt = Date.now();
     return availability;
 };
 
