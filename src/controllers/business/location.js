@@ -5,6 +5,7 @@ import { ApiResponse } from "../../utils/ApiResponse.js";
 import { asyncHandler } from "../../utils/asyncHandler.js";
 import mongoose from "mongoose";
 import { BUSINESS_CATEGORIES, calculateDistance } from "./helpers.js";
+import { stripKycForPublic } from "../../utils/businessPrivacy.utils.js";
 
 // PATCH /api/v1/business/live-location
 export const updateLiveLocation = asyncHandler(async (req, res) => {
@@ -102,6 +103,10 @@ const stripPrivateBusinessFields = (business) => {
         delete publicContact.email;
         publicBusiness.contact = publicContact;
     }
+
+    // PAN, KYC check results, the e-mailed details snapshot (23 Nov 2026: these
+    // came with Phase 4 and were public until now).
+    stripKycForPublic(publicBusiness);
 
     return publicBusiness;
 };

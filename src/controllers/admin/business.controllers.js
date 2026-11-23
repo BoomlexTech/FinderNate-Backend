@@ -6,6 +6,7 @@ import { ApiError } from "../../utils/ApiError.js";
 import { ApiResponse } from "../../utils/ApiResponse.js";
 import { asyncHandler } from "../../utils/asyncHandler.js";
 import { UNASSIGNED_MANAGER_FILTER, parseAccountManagerInput } from "../../utils/accountManager.utils.js";
+import { maskBusinessIdsForAdmin } from "../../utils/businessPrivacy.utils.js";
 
 // GET /api/v1/admin/businesses
 export const getAllBusinesses = asyncHandler(async (req, res) => {
@@ -55,7 +56,8 @@ export const getAllBusinesses = asyncHandler(async (req, res) => {
 
     return res.status(200).json(
         new ApiResponse(200, {
-            businesses,
+            // PAN as its last four characters only (23 Nov 2026).
+            businesses: businesses.map(maskBusinessIdsForAdmin),
             pagination: {
                 currentPage: parseInt(page),
                 totalPages: Math.ceil(totalBusinesses / limit),
@@ -166,7 +168,8 @@ export const getPendingBusinessVerifications = asyncHandler(async (req, res) => 
 
     return res.status(200).json(
         new ApiResponse(200, {
-            businesses: businessesWithUnverifiedDocs,
+            // The GSTIN's PAN part masked, as everywhere in the admin panel.
+            businesses: businessesWithUnverifiedDocs.map(maskBusinessIdsForAdmin),
             pagination: {
                 currentPage: parseInt(page),
                 totalPages: Math.ceil(totalBusinesses / limit),
@@ -290,7 +293,8 @@ export const getBusinessVerificationDetails = asyncHandler(async (req, res) => {
 
     return res.status(200).json(
         new ApiResponse(200, {
-            business,
+            // PAN as its last four characters only (23 Nov 2026).
+            business: maskBusinessIdsForAdmin(business),
             verificationHistory: {
                 verifiedAt: business.verifiedAt,
                 verifiedBy: business.verifiedBy,
@@ -439,7 +443,8 @@ export const getBusinessVerificationHistory = asyncHandler(async (req, res) => {
 
     return res.status(200).json(
         new ApiResponse(200, {
-            businesses,
+            // PAN as its last four characters only (23 Nov 2026).
+            businesses: businesses.map(maskBusinessIdsForAdmin),
             pagination: {
                 currentPage: parseInt(page),
                 totalPages: Math.ceil(totalBusinesses / limit),

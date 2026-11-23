@@ -3,6 +3,7 @@ import { createBusinessVerificationNotification } from "../notification.controll
 import { ApiError } from "../../utils/ApiError.js";
 import { ApiResponse } from "../../utils/ApiResponse.js";
 import { asyncHandler } from "../../utils/asyncHandler.js";
+import { maskBusinessIdsForAdmin } from "../../utils/businessPrivacy.utils.js";
 
 // GET /api/v1/admin/aadhaar-verification/pending
 export const getPendingAadhaarVerifications = asyncHandler(async (req, res) => {
@@ -49,7 +50,8 @@ export const getPendingAadhaarVerifications = asyncHandler(async (req, res) => {
 
     return res.status(200).json(
         new ApiResponse(200, {
-            businesses: businessesWithAadhaarDocs,
+            // The GSTIN's PAN part masked, as everywhere in the admin panel.
+            businesses: businessesWithAadhaarDocs.map(maskBusinessIdsForAdmin),
             pagination: {
                 currentPage: parseInt(page),
                 totalPages: Math.ceil(totalBusinesses / limit),

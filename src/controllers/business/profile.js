@@ -1,6 +1,7 @@
 import { User } from "../../models/user.models.js";
 import { assertNotLocked, maybeSendDetailsConfirmation, detailsAlreadyEmailed, confirmationRecipient, maskEmail } from '../kyc.controllers.js';
 import { lockedFieldsTouched } from '../../utils/phase4.rules.js';
+import { stripKycForPublic } from '../../utils/businessPrivacy.utils.js';
 import Business from "../../models/business.models.js";
 import BusinessRating from "../../models/businessRating.models.js";
 import { ApiError } from "../../utils/ApiError.js";
@@ -362,6 +363,10 @@ const stripPrivateBusinessFields = (business) => {
         }
         publicBusiness.contact = publicContact;
     }
+
+    // PAN, KYC check results, the e-mailed details snapshot (23 Nov 2026: these
+    // came with Phase 4 and were public until now).
+    stripKycForPublic(publicBusiness);
 
     return publicBusiness;
 };

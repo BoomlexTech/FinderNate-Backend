@@ -9,6 +9,7 @@ import { sendEmail } from '../utils/sendEmail.js';
 import { notifyActivity } from '../utils/activityNotify.utils.js';
 import { getSettingValue } from '../utils/appSettings.utils.js';
 import { refreshStoredTier, tiersFor } from '../utils/businessVisibility.utils.js';
+import { maskBusinessIdsForAdmin } from '../utils/businessPrivacy.utils.js';
 import {
     decideKyc, effectiveKycStatus, isValidGstin, isValidPan, maskId, normalizeId, panFromGstin,
     visibilityTier, LOCKED_FIELDS, kycCheck,
@@ -663,7 +664,8 @@ export const adminKycQueue = asyncHandler(async (req, res) => {
             .select('userId businessName businessType registrationType gstNumber panNumber kyc documents contact location').lean(),
         Business.countDocuments(filter),
     ]);
-    return res.status(200).json(new ApiResponse(200, { items: rows, total, page }, 'OK'));
+    // PAN shown to admins as its last four characters only (23 Nov 2026).
+    return res.status(200).json(new ApiResponse(200, { items: rows.map(maskBusinessIdsForAdmin), total, page }, 'OK'));
 });
 
 /** POST /admin/kyc/:businessId/decision  { decision: 'approve'|'reject', note } */
