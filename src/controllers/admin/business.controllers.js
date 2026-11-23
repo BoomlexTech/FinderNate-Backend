@@ -6,7 +6,7 @@ import { ApiError } from "../../utils/ApiError.js";
 import { ApiResponse } from "../../utils/ApiResponse.js";
 import { asyncHandler } from "../../utils/asyncHandler.js";
 import { UNASSIGNED_MANAGER_FILTER, parseAccountManagerInput } from "../../utils/accountManager.utils.js";
-import { maskBusinessIdsForAdmin } from "../../utils/businessPrivacy.utils.js";
+import { exactIdSearchClauses, maskBusinessIdsForAdmin } from "../../utils/businessPrivacy.utils.js";
 
 // GET /api/v1/admin/businesses
 export const getAllBusinesses = asyncHandler(async (req, res) => {
@@ -122,26 +122,31 @@ export const getPendingBusinessVerifications = asyncHandler(async (req, res) => 
 
     const { page = 1, limit = 20, search } = req.query;
 
-    let filter = {
+    const pending = {
         $or: [
             { verificationStatus: 'pending' },
             { 'documents': { $elemMatch: { verified: false } } }
         ]
     };
 
-    if (search) {
-        filter.$and = [
-            filter,
-            {
-                $or: [
-                    { businessName: { $regex: search, $options: 'i' } },
-                    { category: { $regex: search, $options: 'i' } },
-                    { aadhaarNumber: { $regex: search, $options: 'i' } },
-                    { gstNumber: { $regex: search, $options: 'i' } }
-                ]
-            }
-        ];
-    }
+    // Name, category, or a whole Aadhaar number / GSTIN (masked in this panel,
+    // so no partial match on them). This used to put the filter inside itself
+    // (`filter.$and = [filter, …]`), and every search failed with "Maximum call
+    // stack size exceeded".
+    const filter = search
+        ? {
+            $and: [
+                pending,
+                {
+                    $or: [
+                        { businessName: { $regex: search, $options: 'i' } },
+                        { category: { $regex: search, $options: 'i' } },
+                        ...exactIdSearchClauses(search)
+                    ]
+                }
+            ]
+        }
+        : pending;
 
     const businesses = await Business.find(filter)
         .populate('userId', 'username fullName email phoneNumber')

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { maskBusinessIdsForAdmin, maskGstin, stripKycForPublic } from '../../src/utils/businessPrivacy.utils.js';
+import { exactIdSearchClauses, maskBusinessIdsForAdmin, maskGstin, stripKycForPublic } from '../../src/utils/businessPrivacy.utils.js';
 
 // A business record after Phase 4 KYC, as Mongo hands it back (made-up IDs).
 const business = () => ({
@@ -83,4 +83,25 @@ test('a stranger gets no PAN, no check results, no e-mailed details, no admin re
     }
     assert.equal(out.businessName, 'Sharp Kraft');
     assert.deepEqual(out.contact, { website: 'https://example.com' });
+});
+
+test('admins see the legacy Aadhaar number as its last four digits', () => {
+    const masked = maskBusinessIdsForAdmin({ ...business(), aadhaarNumber: '123456789012' });
+    assert.equal(masked.aadhaarNumber, '••••••••9012');
+    assert.equal(maskBusinessIdsForAdmin({ aadhaarNumber: '1234 5678 9012' }).aadhaarNumber, '••••••••9012', 'spaced too');
+    assert.doesNotMatch(JSON.stringify(masked), /12345678/);
+    // An aggregate row (history page): a plain object with only some fields.
+    assert.deepEqual(
+        maskBusinessIdsForAdmin({ businessName: 'x', aadhaarNumber: '123456789012', verificationStatus: 'approved' }),
+        { businessName: 'x', aadhaarNumber: '••••••••9012', verificationStatus: 'approved' },
+    );
+});
+
+test('admin search matches masked ID numbers only when typed in full', () => {
+    assert.deepEqual(exactIdSearchClauses('1234 5678 9012'), [{ aadhaarNumber: { $in: ['123456789012', '1234 5678 9012'] } }]);
+    assert.deepEqual(exactIdSearchClauses('29abcde1234f1z5'), [{ gstNumber: { $regex: '^29ABCDE1234F1Z5$', $options: 'i' } }]);
+    // Partial numbers, names and regex tricks never reach the ID fields.
+    for (const q of ['4', '1234', '12345678901', '29ABCDE', '.*', '^1', 'Sharp Kraft', '', undefined, null]) {
+        assert.deepEqual(exactIdSearchClauses(q), [], `"${q}" must not search ID numbers`);
+    }
 });

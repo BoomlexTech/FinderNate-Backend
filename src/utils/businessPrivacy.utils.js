@@ -1,8 +1,8 @@
 import { maskId } from './phase4.rules.js';
 
 // What a Business record may show, and to whom, for the government ID numbers
-// that Phase 4 KYC added (client, 23 Nov 2026: "can the super admin see the full
-// PAN? if yes, mask it").
+// it holds (client, 23 Nov 2026: "can the super admin see the full PAN? if yes,
+// mask it" — then the same for Aadhaar).
 
 const plain = (business) =>
     business && typeof business.toObject === 'function' ? business.toObject() : business;
@@ -24,8 +24,10 @@ export const maskGstin = (gstin) => {
  * characters. It is stored three times — `panNumber` and inside the saved
  * Cashfree check results (`kyc.checks.pan.pan`, `kyc.checks.gst.pan`, the PAN
  * inside a GSTIN) — and all three are masked, as is the PAN part of the GSTIN
- * itself ([maskGstin]). The names on the PAN / GST stay: the admin compares them
- * when a check needs a human. Returns a new object.
+ * itself ([maskGstin]). The legacy full Aadhaar number (`aadhaarNumber`, from
+ * the pre-Phase-4 manual review) keeps only its last four digits as well; the
+ * admin compares those with the uploaded card. The names on the PAN / GST stay:
+ * the admin compares them when a check needs a human. Returns a new object.
  */
 export const maskBusinessIdsForAdmin = (business) => {
     const b = plain(business);
@@ -33,6 +35,7 @@ export const maskBusinessIdsForAdmin = (business) => {
     const out = { ...b };
     if (out.panNumber) out.panNumber = maskId(out.panNumber, 4);
     if (out.gstNumber) out.gstNumber = maskGstin(out.gstNumber);
+    if (out.aadhaarNumber) out.aadhaarNumber = maskId(String(out.aadhaarNumber), 4);
     const checks = out.kyc?.checks;
     if (checks) {
         const c = { ...checks };
@@ -70,4 +73,23 @@ export const stripKycForPublic = (publicBusiness) => {
     delete publicBusiness.verificationRemarks;
     if (publicBusiness.kyc) publicBusiness.kyc = { status: publicBusiness.kyc.status };
     return publicBusiness;
+};
+
+/**
+ * Admin-search clauses for the ID numbers the admin panel shows masked: only a
+ * whole Aadhaar number (12 digits, spaced or not) or a whole GSTIN finds a
+ * business. These were partial-match regexes, and a search box that answers
+ * "is there an Aadhaar starting 4…?" gives a masked number back one digit at
+ * a time. Returns [] for anything else, so it can be spread into an `$or`.
+ */
+export const exactIdSearchClauses = (search) => {
+    const q = String(search ?? '').replace(/[\s-]+/g, '').toUpperCase();
+    const clauses = [];
+    if (/^\d{12}$/.test(q)) {
+        clauses.push({ aadhaarNumber: { $in: [q, q.replace(/(\d{4})(?=\d)/g, '$1 ')] } });
+    }
+    if (/^[0-9A-Z]{15}$/.test(q)) {
+        clauses.push({ gstNumber: { $regex: `^${q}$`, $options: 'i' } });
+    }
+    return clauses;
 };

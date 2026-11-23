@@ -3,30 +3,31 @@ import { createBusinessVerificationNotification } from "../notification.controll
 import { ApiError } from "../../utils/ApiError.js";
 import { ApiResponse } from "../../utils/ApiResponse.js";
 import { asyncHandler } from "../../utils/asyncHandler.js";
-import { maskBusinessIdsForAdmin } from "../../utils/businessPrivacy.utils.js";
+import { exactIdSearchClauses, maskBusinessIdsForAdmin } from "../../utils/businessPrivacy.utils.js";
 
 // GET /api/v1/admin/aadhaar-verification/pending
 export const getPendingAadhaarVerifications = asyncHandler(async (req, res) => {
     const { page = 1, limit = 20, search } = req.query;
 
-    let filter = {
+    const pending = {
         $or: [
             { 'documents': { $elemMatch: { documentType: 'aadhaar', verified: false } } },
             { aadhaarNumber: { $exists: true, $ne: null, $ne: "" }, isVerified: false }
         ]
     };
 
-    if (search) {
-        filter.$and = [
-            filter,
-            {
-                $or: [
-                    { businessName: { $regex: search, $options: 'i' } },
-                    { aadhaarNumber: { $regex: search, $options: 'i' } }
-                ]
-            }
-        ];
-    }
+    // Business name, or a whole Aadhaar number / GSTIN (they are masked in this
+    // panel, so no partial match on them). This used to put the filter inside
+    // itself (`filter.$and = [filter, …]`), and every search failed with
+    // "Maximum call stack size exceeded".
+    const filter = search
+        ? {
+            $and: [
+                pending,
+                { $or: [{ businessName: { $regex: search, $options: 'i' } }, ...exactIdSearchClauses(search)] }
+            ]
+        }
+        : pending;
 
     const businesses = await Business.find(filter)
         .populate('userId', 'username fullName email phoneNumber')
@@ -201,7 +202,8 @@ export const getAadhaarVerificationHistory = asyncHandler(async (req, res) => {
 
     return res.status(200).json(
         new ApiResponse(200, {
-            businesses,
+            // Aadhaar as its last four digits only (23 Nov 2026).
+            businesses: businesses.map(maskBusinessIdsForAdmin),
             pagination: {
                 currentPage: parseInt(page),
                 totalPages: Math.ceil(totalBusinesses / limit),
