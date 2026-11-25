@@ -268,11 +268,17 @@ export const updateReportStatus = asyncHandler(async (req, res) => {
 
     // Once no report on the post is still waiting for a reviewer, it is no longer
     // "reported" for boost and promotion purposes.
+    //
+    // The two statuses are strings. They were written without quotes, as
+    // variable names that do not exist, so reviewing any report on a post threw
+    // here: the report and any account action above were already saved, but
+    // the post kept its "reported" mark, the admin log entry below was never
+    // written and the admin panel was shown an error (found 25 Nov 2026).
     const reviewedPostId = report.reportedPostId?._id;
-    if (reviewedPostId && ![pending, under_review].includes(status)) {
+    if (reviewedPostId && !['pending', 'under_review'].includes(status)) {
         const stillOpen = await Report.exists({
             reportedPostId: reviewedPostId,
-            status: { $in: [pending, under_review] }
+            status: { $in: ['pending', 'under_review'] }
         });
         if (!stillOpen) {
             await Post.updateOne({ _id: reviewedPostId }, { $set: { isReported: false } });

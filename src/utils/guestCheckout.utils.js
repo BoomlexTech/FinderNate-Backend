@@ -20,6 +20,10 @@ import {
     emailButton,
     emailDetails,
     emailCallout,
+    // Was missing: the account-ready email below uses it for the one-time
+    // code, so building that email threw and the email was never sent (the
+    // error is swallowed there, the SMS being the main channel).
+    emailCodeBlock,
 } from "./emailTemplate.js";
 import { sendSms } from "./sendSms.js";
 

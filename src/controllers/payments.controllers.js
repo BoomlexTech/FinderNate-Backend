@@ -1382,9 +1382,13 @@ export const createShareableCashfreeOrder = asyncHandler(async (req, res) => {
         };
     }
 
-    // Find or create payment link. A seller-set link was resolved above and is
-    // the one being paid — never look for another at the same figure.
-    let paymentLink = sellerSetLink || await PaymentLink.findOne({
+    // Find or create the payment link for this post at this figure.
+    //
+    // This read `sellerSetLink || await PaymentLink.findOne(...)`. Seller-set
+    // link prices were removed on 6 Aug 2026 and that variable went with them,
+    // but this one mention stayed, naming something that no longer exists
+    // (found 25 Nov 2026).
+    let paymentLink = await PaymentLink.findOne({
         postId,
         amount: numericAmount,
         status: 'active',
