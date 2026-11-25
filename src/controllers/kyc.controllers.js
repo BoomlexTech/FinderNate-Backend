@@ -18,6 +18,7 @@ import {
     verificationConfigured, verifyGstin, verifyPan, sendAadhaarOtp, verifyAadhaarOtp,
 } from '../services/cashfreeVerify.service.js';
 import { publicApiUrl, publicSiteUrl } from '../utils/publicUrls.js';
+import { KYC_VERIFIED_NOTICE, KYC_DETAILS_CONFIRMED_NOTICE } from '../utils/kycNotices.js';
 import { renderEmail, escapeHtml as escapeEmailHtml } from '../utils/emailTemplate.js';
 import { renderDetailsPage } from '../utils/detailsConfirmation.page.js';
 import {
@@ -77,7 +78,7 @@ const notifyKyc = (userId, status, reasons = []) => notifyActivity({
     recipientId: userId,
     type: 'kyc',
     message: status === 'verified'
-        ? 'Your business is verified. Your product, service and business posts can now be seen by your followers, and by everyone with an active plan.'
+        ? KYC_VERIFIED_NOTICE
         : status === 'needs_review'
             ? "We're checking your business details. This usually takes a working day."
             : `Your business verification needs attention: ${reasons.join('; ')}`,
@@ -597,7 +598,7 @@ export const submitDetailsFromEmail = async (req, res) => {
             await Business.updateOne({ _id: business._id }, {
                 $set: { detailsLocked: true, 'detailsConfirmation.status': 'confirmed', 'detailsConfirmation.respondedAt': now },
             });
-            await notify('Your business details are confirmed. They can no longer be edited without re-verification.');
+            await notify(KYC_DETAILS_CONFIRMED_NOTICE);
             sendDetailsPage(res, { ...CONFIRMED_PAGE, rows: snapshotRows(snapshotOf(business)) });
             return;
         }

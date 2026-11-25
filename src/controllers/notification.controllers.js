@@ -7,6 +7,7 @@ import { asyncHandler } from "../utils/asyncHandler.js";
 import { ApiResponse } from "../utils/ApiResponse.js";
 import { ApiError } from "../utils/ApiError.js";
 import notificationCache from "../utils/notificationCache.utils.js";
+import { withCurrentKycWording } from "../utils/kycNotices.js";
 import { User } from "../models/user.models.js";
 import { sendEmail } from "../utils/sendEmail.js";
 import { renderEmail, emailParagraph, emailCallout } from "../utils/emailTemplate.js";
@@ -659,6 +660,10 @@ export const getNotifications = asyncHandler(async (req, res) => {
     }
 
     await attachContactRequests(notifications, receiverId);
+
+    // Verification notices sent before 25 Nov 2026 are shown with today's
+    // wording (see utils/kycNotices.js).
+    withCurrentKycWording(notifications);
 
     res.set({
         'X-Total-Count': String(totalCount),
