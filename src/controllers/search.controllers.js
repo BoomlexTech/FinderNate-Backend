@@ -187,8 +187,14 @@ const filterVisibleListings = async (rows, viewerId) => {
     const viewer = viewerId ? String(viewerId) : null;
     const isOwn = (row) => viewer !== null && String(row.userId?._id || row.userId) === viewer;
 
+    // `viewerId`, not `req.user?._id`: there is no `req` in this helper. It was
+    // written that way on 4 Nov 2026 with the other callers of this filter,
+    // which are all route handlers, and threw "req is not defined" for every
+    // search that found at least one product. Instant search answered 500 for
+    // everyone, signed in or not, as soon as the text matched a product
+    // (found 25 Nov 2026).
     const visibleToOthers = new Set(
-        (await filterBusinessPostsByPaymentPlan(rows.filter((row) => !isOwn(row)), req.user?._id)).map((row) => String(row._id))
+        (await filterBusinessPostsByPaymentPlan(rows.filter((row) => !isOwn(row)), viewerId)).map((row) => String(row._id))
     );
     return rows.filter((row) => isOwn(row) || visibleToOthers.has(String(row._id)));
 };
