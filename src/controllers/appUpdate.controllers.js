@@ -13,6 +13,8 @@ import {
     parseVersion,
     updateNotificationText
 } from '../utils/appVersion.utils.js';
+import { SERVER_CAPABILITIES } from '../constants/serverCapabilities.js';
+import { companyLogoForPush } from '../utils/companyBrand.js';
 
 /**
  * "A new version is available" (client list, item 14).
@@ -77,6 +79,7 @@ const sendUpdatePush = async ({ version, notes }) => {
     const targets = await collectUpdateTokens(version);
     const { title, body } = updateNotificationText(version, notes);
     const messaging = getMessaging();
+    const logo = companyLogoForPush();
     let sent = 0;
 
     for (let i = 0; i < targets.length; i += SEND_BATCH) {
@@ -99,7 +102,9 @@ const sendUpdatePush = async ({ version, notes }) => {
                             channelId: 'follows',
                             priority: 'default',
                             defaultVibrateTimings: true,
-                            sound: 'default'
+                            sound: 'default',
+                            // From Findernate itself: the company logo.
+                            ...(logo ? { imageUrl: logo } : {})
                         }
                     }
                 });
@@ -139,7 +144,10 @@ export const getAppVersion = asyncHandler(async (req, res) => {
         updateUrl: platform === 'android' ? PLAY_STORE_URL : null,
         updateAvailable: Boolean(
             latest && parseVersion(installed) && compareVersions(installed, latest.version) < 0
-        )
+        ),
+        // What this server supports, for clients that must not assume it
+        // (see constants/serverCapabilities.js).
+        capabilities: SERVER_CAPABILITIES
     }, 'OK'));
 });
 

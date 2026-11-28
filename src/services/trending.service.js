@@ -19,6 +19,8 @@ export const CITIES_KEY = 'fn:trending:cities';
 const TOPICS_TTL = 2 * 60 * 60;
 const PLACE_TTL = 6 * 60 * 60;
 const PER_PLACE = 30;
+/** Trending hashtags kept. The row shows the first 10; "More" shows them all. */
+export const TOPICS_KEPT = 30;
 const MIN_CITY_POSTS = 3;
 
 const publicLive = (since) => ({
@@ -39,7 +41,9 @@ export const computeTrendingTopics = async () => {
             { $group: { _id: '$hashtags', postCount: { $sum: 1 }, engagement: { $sum: '$e' } } },
             { $addFields: { score: { $add: [{ $multiply: ['$postCount', 5] }, '$engagement'] } } },
             { $sort: { score: -1 } },
-            { $limit: 10 },
+            // 30, of which the apps show the first 10 and the rest behind
+            // "More" (client list, 28 Nov 2026).
+            { $limit: TOPICS_KEPT },
         ]);
         if (rows.length >= 5 || hours > 24) {
             const topics = rows.map((r) => ({ tag: r._id, postCount: r.postCount }));

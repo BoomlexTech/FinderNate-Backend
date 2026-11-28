@@ -20,8 +20,10 @@ import {
 import { assertContactsVerifiedForBusiness } from '../../src/controllers/business/switch.js';
 import { hasBlueTick, isPlusActive } from '../../src/utils/plusBadge.js';
 import {
-    readHideAddress, withoutStreetAddress, splitServiceAddress, publicServicePlace,
+    readHideAddress, withoutStreetAddress, splitServiceAddress, publicServicePlace, nameRevealsAddress,
 } from '../../src/utils/serviceAddress.utils.js';
+import { SERVER_CAPABILITIES } from '../../src/constants/serverCapabilities.js';
+import { companyLogoUrl, companyLogoForPush, isCompanyPush } from '../../src/utils/companyBrand.js';
 import { validateDeliveryAndLocation, deliveryOptionsForServiceType } from '../../src/utils/deliveryValidation.js';
 import {
     parseVersion, compareVersions, needsUpdate, updateNotificationText, PLAY_STORE_URL,
@@ -318,8 +320,52 @@ test('#26 a location nested inside the service details is stripped too', () => {
         undefined,
     );
     assert.equal(split.privateAddress, '7 Lake View');
-    assert.deepEqual(split.service.location, { city: 'Ooty' });
+    // No place was tagged, so the public place is the city.
+    assert.deepEqual(split.service.location, { city: 'Ooty', name: 'Ooty' });
     assert.equal(split.location, undefined);
+});
+
+test('#26 a place name that repeats the hidden address is not kept either', () => {
+    // A composer with no separate place to tag fills `name` with the address.
+    const same = splitServiceAddress(
+        { hideAddress: true },
+        { name: '12 Gandhi Road, Trichy', address: '12 Gandhi Road, Trichy', city: 'Trichy', state: 'Tamil Nadu' },
+    );
+    assert.deepEqual(same.location, { name: 'Trichy, Tamil Nadu', city: 'Trichy', state: 'Tamil Nadu' });
+    assert.equal(same.privateAddress, '12 Gandhi Road, Trichy');
+
+    // A piece of the address is still the address.
+    const piece = splitServiceAddress(
+        { hideAddress: true },
+        { name: '12 Gandhi Road', address: 'Flat 2, 12 Gandhi Road, Trichy', city: 'Trichy' },
+    );
+    assert.equal(piece.location.name, 'Trichy');
+
+    // So is a name that holds it. With no city to fall back to, no name at all.
+    const holds = splitServiceAddress(
+        { hideAddress: true },
+        { name: 'Sri Tuitions, 12 Gandhi Road', address: '12 Gandhi Road' },
+    );
+    assert.equal('name' in holds.location, false);
+    assert.equal(JSON.stringify(holds.location).includes('Gandhi'), false);
+
+    // A place the owner tagged themselves says nothing about the door.
+    const tagged = splitServiceAddress(
+        { hideAddress: true },
+        { name: 'Near the temple', address: '12 Gandhi Road', city: 'Trichy' },
+    );
+    assert.equal(tagged.location.name, 'Near the temple');
+
+    assert.equal(nameRevealsAddress('12 gandhi road', '12 Gandhi Road.'), true);
+    assert.equal(nameRevealsAddress('Near the temple', '12 Gandhi Road'), false);
+    assert.equal(nameRevealsAddress('', '12 Gandhi Road'), false);
+    assert.equal(nameRevealsAddress('Trichy', ''), false);
+});
+
+test('#26 the server says it keeps hidden addresses private, so a client can check before sending one', () => {
+    assert.ok(SERVER_CAPABILITIES.includes('service-hidden-address'));
+    assert.ok(SERVER_CAPABILITIES.includes('places'));
+    assert.ok(Object.isFrozen(SERVER_CAPABILITIES));
 });
 
 test('#26 an address that is not hidden is stored as it was sent', () => {
@@ -442,4 +488,33 @@ test('#14 the notification says what to do and where the tap goes', () => {
     const withNotes = updateNotificationText('4.9.33', ' New plans and a faster feed. ');
     assert.equal(withNotes.body, 'Findernate 4.9.33 is ready: New plans and a faster feed. Tap to update.');
     assert.equal(PLAY_STORE_URL, 'https://play.google.com/store/apps/details?id=com.findernate.app');
+});
+
+// ── 20: the company logo on company notifications ───────────────────────────
+
+test('#20 a push that nobody sent is from Findernate and carries its logo', () => {
+    const saved = { logo: process.env.COMPANY_LOGO_URL, site: process.env.FRONTEND_URL };
+    try {
+        delete process.env.COMPANY_LOGO_URL;
+        process.env.FRONTEND_URL = 'https://findernate.com/';
+        assert.equal(companyLogoUrl(), 'https://findernate.com/icon-192x192.png');
+        assert.equal(companyLogoForPush(), 'https://findernate.com/icon-192x192.png');
+
+        // A phone cannot fetch a developer's localhost: no picture, not a slow push.
+        process.env.FRONTEND_URL = 'http://localhost:3000';
+        assert.equal(companyLogoForPush(), null);
+
+        process.env.COMPANY_LOGO_URL = 'https://cdn.example.com/logo.png';
+        assert.equal(companyLogoUrl(), 'https://cdn.example.com/logo.png');
+        assert.equal(companyLogoForPush(), 'https://cdn.example.com/logo.png');
+    } finally {
+        if (saved.logo === undefined) delete process.env.COMPANY_LOGO_URL; else process.env.COMPANY_LOGO_URL = saved.logo;
+        if (saved.site === undefined) delete process.env.FRONTEND_URL; else process.env.FRONTEND_URL = saved.site;
+    }
+
+    assert.equal(isCompanyPush({}), true);
+    assert.equal(isCompanyPush(undefined), true);
+    assert.equal(isCompanyPush({ notificationId: 'n1' }), true);
+    // A like, a follow, a comment: the person's own notification.
+    assert.equal(isCompanyPush({ senderId: 'u1' }), false);
 });

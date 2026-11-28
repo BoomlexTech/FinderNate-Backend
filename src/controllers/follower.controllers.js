@@ -17,7 +17,36 @@ import {
     onUserUnfollowed,
     getFollowersCount,
     getFollowingCount,
+    getFollowingIdSet,
+    getPendingFollowRequestIdSet,
 } from "../utils/followEngagement.utils.js";
+
+/**
+ * Says, for each person in a followers / following list, how the VIEWER stands
+ * with them: `isFollowing` (the viewer follows them), `isPending` (the viewer
+ * asked to follow a private account and is waiting) and `isMe`.
+ *
+ * The lists used to carry none of this, so the page could not draw a Follow /
+ * Following button that was right, and both clients drew a decoration there
+ * instead (client list, 28 Nov 2026, item 21). Two reads for the whole page,
+ * not one per row.
+ */
+export const withViewerFollowState = async (users, viewerId) => {
+    if (!Array.isArray(users) || users.length === 0) return users || [];
+    const viewer = viewerId ? String(viewerId) : '';
+    const [following, pending] = viewer
+        ? await Promise.all([getFollowingIdSet(viewer), getPendingFollowRequestIdSet(viewer)])
+        : [new Set(), new Set()];
+    return users.map((user) => {
+        const id = String(user?._id || '');
+        return {
+            ...user,
+            isMe: !!viewer && id === viewer,
+            isFollowing: following.has(id),
+            isPending: !following.has(id) && pending.has(id),
+        };
+    });
+};
 
 // Follow a user (with privacy support)
 export const followUser = asyncHandler(async (req, res) => {
@@ -341,7 +370,7 @@ export const getFollowers = asyncHandler(async (req, res) => {
         followerUsers = dbFollowers.map(f => f.followerId).filter(Boolean);
     }
 
-    const followersWithBadges = await addBadgesToUsers(followerUsers);
+    const followersWithBadges = await withViewerFollowState(await addBadgesToUsers(followerUsers), req.user?._id);
     const hasMore = page * limit < totalCount;
 
     res.status(200).json(new ApiResponse(200, {
@@ -440,7 +469,7 @@ export const getFollowing = asyncHandler(async (req, res) => {
         followingUsers = dbFollowing.map(f => f.userId).filter(Boolean);
     }
 
-    const followingWithBadges = await addBadgesToUsers(followingUsers);
+    const followingWithBadges = await withViewerFollowState(await addBadgesToUsers(followingUsers), req.user?._id);
     const hasMore = page * limit < totalCount;
 
     res.status(200).json(new ApiResponse(200, {

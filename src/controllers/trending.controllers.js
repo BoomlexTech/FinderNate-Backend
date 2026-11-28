@@ -54,7 +54,7 @@ export const loadCards = async (ids, req, limit) => {
     return allowed;
 };
 
-/** GET /explore/trending-topics — top 10 hashtags, refreshed every 30 minutes (#58). */
+/** GET /explore/trending-topics — the top hashtags (up to 30), refreshed every 30 minutes (#58). */
 export const getTrendingTopicsHandler = asyncHandler(async (req, res) => {
     const data = await getTrendingTopics();
     return res.status(200).json(new ApiResponse(200, data, 'Trending topics'));
@@ -93,9 +93,12 @@ export const getTrendingNearYou = asyncHandler(async (req, res) => {
     const { local, all } = await getTrendingPlaceIds(city);
     const useLocal = !!local && (local.trending?.length || 0) >= 3;
     const pick = useLocal ? local : all;
+    // 12 each unless asked for more: the row shows the first 10, and "More"
+    // asks for up to 30 (as many as are kept per place).
+    const limit = Math.min(30, Math.max(1, parseInt(req.query.limit, 10) || 12));
     const [trending, deals] = await Promise.all([
-        loadCards(pick?.trending || [], req, 12),
-        loadCards((useLocal && local.deals?.length ? local.deals : all?.deals) || [], req, 12),
+        loadCards(pick?.trending || [], req, limit),
+        loadCards((useLocal && local.deals?.length ? local.deals : all?.deals) || [], req, limit),
     ]);
     const label = useLocal ? city.replace(/\b\p{L}/gu, (c) => c.toUpperCase()) : null;
     return res.status(200).json(new ApiResponse(200, {

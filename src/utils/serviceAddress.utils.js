@@ -16,11 +16,40 @@ import ServicePrivateAddress from '../models/servicePrivateAddress.models.js';
 export const readHideAddress = (service) =>
     service?.hideAddress === true || service?.hideAddress === 'true';
 
-/** A location without its street address, postcode and exact map point. */
+const foldPlaceText = (value) =>
+    String(value ?? '').toLowerCase().replace(/[\s,.;:/#()-]+/g, ' ').trim();
+
+/**
+ * True when a place name gives the street address away: it is the address,
+ * holds it, or is a piece of it ("12 MG Road" tagged as the place of a post
+ * whose address is "12 MG Road, Baner, Pune").
+ */
+export const nameRevealsAddress = (name, address) => {
+    const n = foldPlaceText(name);
+    const a = foldPlaceText(address);
+    if (!n || !a) return false;
+    return n === a || n.includes(a) || a.includes(n);
+};
+
+/**
+ * A location without its street address, postcode and exact map point.
+ *
+ * The place name stays only when it does not repeat the address. A composer
+ * that had no separate place to tag used to fill `name` with the address
+ * itself, and keeping that would publish what the owner asked to hide. A name
+ * that is dropped, or was never given, becomes the city and state, so the
+ * post still says roughly where the service is.
+ */
 export const withoutStreetAddress = (location) => {
     if (!location || typeof location !== 'object') return location;
     // eslint-disable-next-line no-unused-vars
     const { address, postalCode, coordinates, ...rest } = location;
+    const name = String(rest.name ?? '').trim();
+    if (!name || nameRevealsAddress(name, address)) {
+        const area = [rest.city, rest.state].map((part) => String(part ?? '').trim()).filter(Boolean).join(', ');
+        if (area) rest.name = area;
+        else delete rest.name;
+    }
     return rest;
 };
 

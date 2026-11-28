@@ -1,6 +1,7 @@
 import admin, { getMessaging } from "../config/firebase-admin.config.js";
 import { sendPushNotification as sendWebPush } from "../controllers/pushNotification.controllers.js";
 import { getPushTargets, dropDeadToken, titleFor } from "./pushTargets.service.js";
+import { companyLogoForPush, isCompanyPush } from "../utils/companyBrand.js";
 
 /**
  * One place that turns "this user should be told about X" into an actual push.
@@ -93,7 +94,7 @@ const stringifyData = (data = {}) =>
  * tray notification whether or not any Dart code executes, and `data` still
  * rides along for the tap handler.
  */
-const sendFcmToToken = async (fcmToken, { title, body, type, data }) => {
+const sendFcmToToken = async (fcmToken, { title, body, type, data, image }) => {
     const messaging = getMessaging();
     const channelId = resolveChannelId(type);
     const highPriority = HIGH_PRIORITY_TYPES.has(type);
@@ -114,6 +115,8 @@ const sendFcmToToken = async (fcmToken, { title, body, type, data }) => {
                 priority: highPriority ? 'high' : 'default',
                 defaultVibrateTimings: true,
                 sound: 'default',
+                // The company logo on a notification from Findernate itself.
+                ...(image ? { imageUrl: image } : {}),
             },
         },
         apns: {
@@ -182,6 +185,9 @@ export const deliverPush = async (userIds, { title, body, type, data = {}, url }
         const targets = await getPushTargets(ids);
         if (targets.length === 0) return;
 
+        // Nobody sent it: it is from Findernate, and carries the logo.
+        const image = isCompanyPush(data) ? companyLogoForPush() : null;
+
         await Promise.allSettled(targets.map(async (target) => {
             try {
                 await sendFcmToToken(target.token, {
@@ -189,6 +195,7 @@ export const deliverPush = async (userIds, { title, body, type, data = {}, url }
                     body,
                     type,
                     data: { ...data, accountId: target.userId, accountUsername: target.username },
+                    image,
                 });
             } catch (error) {
                 if (isDeadTokenError(error)) {
