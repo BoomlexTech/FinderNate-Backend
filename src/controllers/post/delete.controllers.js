@@ -15,6 +15,7 @@ import { deleteMultipleFromBunny, deleteFromBunny } from "../../utils/bunny.js";
 import { invalidatePostCaches } from "./helpers.js";
 import { cancelBoostsForPost } from "../../utils/boostServing.js";
 import { moveToBin } from "../../utils/bin.utils.js";
+import { deletePrivateServiceAddress } from "../../utils/serviceAddress.utils.js";
 
 /**
  * A post whose money is still in flight cannot be deleted.
@@ -109,6 +110,7 @@ export const deletePost = asyncHandler(async (req, res) => {
         Like.deleteMany({ postId: id }),
         cancelPaymentLinksForPost(id),
         cancelBoostsForPost(id),
+        deletePrivateServiceAddress(id),
         // Comment.deleteMany({ postId: id }),
         // SavedPost.deleteMany({ postId: id })
     ]);

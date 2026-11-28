@@ -3,8 +3,14 @@ import mongoose from "mongoose";
 const ShippingAddressSchema = new mongoose.Schema({
     fullName: String,
     phoneNumber: String,
+    // Door / flat / house number, asked for on its own at checkout so the
+    // courier is not left to find it inside one long address line. Optional;
+    // orders placed before it existed have none.
+    doorNumber: { type: String, trim: true, maxlength: 60 },
     addressLine1: String,
     addressLine2: String,
+    // A nearby place the courier can ask for ("opposite the bus stand").
+    landmark: { type: String, trim: true, maxlength: 120 },
     city: String,
     state: String,
     postalCode: String,

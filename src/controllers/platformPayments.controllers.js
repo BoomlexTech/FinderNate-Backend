@@ -21,6 +21,7 @@ import {
 import { isGooglePlayConfigured, getProductPurchase, consumeProductPurchase } from '../config/googlePlay.config.js';
 import { requireCashfreeWebhookSignature } from '../utils/cashfreeWebhook.utils.js';
 import { publicApiUrl } from '../utils/publicUrls.js';
+import { grantPlusTick } from '../utils/plusBadge.js';
 
 /**
  * Payments to Findernate itself (Phase 4): ads (#27), the re-KYC fee (#74),
@@ -116,7 +117,16 @@ const fulfil = async (purchase) => {
         const user = await User.findById(purchase.userId).select('plusUntil');
         const from = user?.plusUntil && user.plusUntil > now ? user.plusUntil : now;
         await User.updateOne({ _id: purchase.userId }, { $set: { plusUntil: new Date(from.getTime() + 30 * 86400000), plusRemindersSent: [] } });
-        await notifyActivity({ recipientId: purchase.userId, type: 'plan_expiry', message: 'Findernate Plus is active. Enjoy Findernate without ads.' });
+        // Plus comes with the blue tick on the profile (utils/plusBadge.js).
+        // The profile endpoints work it out live from plusUntil; this stores
+        // it for the lists that read the flag directly. The cached profile is
+        // dropped so the owner's next refresh shows the tick.
+        await grantPlusTick(purchase.userId);
+        try {
+            const { UserCacheManager } = await import('../utils/cache.utils.js');
+            await UserCacheManager.invalidateUserProfile(String(purchase.userId));
+        } catch { /* the cache expires on its own */ }
+        await notifyActivity({ recipientId: purchase.userId, type: 'plan_expiry', message: 'Findernate Plus is active. Your profile now has the blue tick, and you will not see ads or boosted posts.' });
     }
 };
 

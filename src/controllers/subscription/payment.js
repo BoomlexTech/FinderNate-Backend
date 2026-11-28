@@ -17,7 +17,8 @@ import {
     ErrorLogger,
     MetricsCollector
 } from '../../utils/monitoring.utils.js';
-import { SUBSCRIPTION_PLANS, isPlanComingSoon } from './plans.js';
+import { SUBSCRIPTION_PLANS, planFromOrderNote, isPlanComingSoon } from './plans.js';
+import { PAID_TIERS, tierHasCalling } from '../../utils/planLimits.js';
 // The renewal arithmetic, the Business-plan mapping, the cache sweep and the
 // redemption guard now live in activation.js and are shared with the Google
 // Play path — the same "keep it as one definition" rule the Razorpay drift
@@ -36,17 +37,8 @@ import { publicApiUrl } from '../../utils/publicUrls.js';
 
 // Which plan a Cashfree order was actually for. Derived from the order note we
 // set at creation time, falling back to the amount paid — never from the client.
-const resolvePlanFromCashfreeOrder = (cfOrder) => {
-    const note = String(cfOrder?.order_note || '');
-    const paidPlans = Object.entries(SUBSCRIPTION_PLANS).filter(([, p]) => p.price > 0);
-
-    const byNote = paidPlans.find(([, p]) => note.includes(p.name));
-    if (byNote) return byNote[0];
-
-    const paidAmount = Number(cfOrder?.order_amount);
-    const byPrice = paidPlans.filter(([, p]) => p.price === paidAmount);
-    return byPrice.length === 1 ? byPrice[0][0] : null;
-};
+const resolvePlanFromCashfreeOrder = (cfOrder) =>
+    planFromOrderNote(cfOrder?.order_note, cfOrder?.order_amount);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Single activation path, shared by the success-page verify call and the S2S
@@ -157,7 +149,7 @@ export const createSubscriptionOrder = asyncHandler(async (req, res) => {
     const userId = req.user._id;
     const { plan } = req.body;
 
-    const validPaidPlans = ['small_business', 'corporate'];
+    const validPaidPlans = PAID_TIERS;
     if (!plan || !validPaidPlans.includes(plan)) {
         throw new ApiError(400, `Invalid plan. Must be one of: ${validPaidPlans.join(', ')}`);
     }
@@ -270,7 +262,7 @@ export const verifySubscriptionPayment = asyncHandler(async (req, res) => {
         throw new ApiError(400, 'Missing required fields: cashfreeOrderId and plan');
     }
 
-    const validPaidPlans = ['small_business', 'corporate'];
+    const validPaidPlans = PAID_TIERS;
     if (!validPaidPlans.includes(plan)) {
         throw new ApiError(400, 'Invalid subscription plan');
     }
@@ -313,7 +305,7 @@ export const verifySubscriptionPayment = asyncHandler(async (req, res) => {
 
     const businessDoc = business || await (await import('../../models/business.models.js')).default.findOne({ userId });
 
-    const hasCallingAccess = ['small_business', 'corporate'].includes(activatedPlan);
+    const hasCallingAccess = tierHasCalling(activatedPlan);
 
     PaymentLogger.logPaymentSuccess(userId.toString(), cfPaymentId, cashfreeOrderId, activatedPlan, SUBSCRIPTION_PLANS[activatedPlan].price);
     SubscriptionLogger.logSubscriptionCreated(userId.toString(), activatedPlan, subscription.startDate, subscription.endDate);

@@ -11,7 +11,9 @@ const SubscriptionSchema = new mongoose.Schema({
     plan: {
         type: String,
         required: true,
-        enum: ['free', 'small_business', 'corporate'] // Only three tiers: free, small_business, and corporate
+        // free, basic (Basic), small_business (Pro) and corporate (Premium).
+        // The last two are the plans' original ids; see utils/planLimits.js.
+        enum: ['free', 'basic', 'small_business', 'corporate']
     },
     startDate: {
         type: Date,
@@ -119,7 +121,7 @@ const SubscriptionSchema = new mongoose.Schema({
      */
     pendingPlan: {
         type: String,
-        enum: ['small_business', 'corporate', null],
+        enum: ['basic', 'small_business', 'corporate', null],
         default: null
     },
     /** When [pendingPlan] takes over — the end of the period already paid for. */

@@ -17,7 +17,7 @@ import { photoroomConfigured, removeBackground } from '../services/photoroom.ser
  *
  * The picture goes through this server and comes straight back in the reply;
  * nothing is stored. Each use counts against a monthly cap that depends on the
- * plan (admin settings ENHANCE_LIMIT_FREE / _SMALL_BUSINESS / _CORPORATE).
+ * plan (admin settings ENHANCE_LIMIT_FREE / _BASIC / _SMALL_BUSINESS / _CORPORATE).
  */
 
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
@@ -38,6 +38,7 @@ export const receiveEnhanceImage = (req, res, next) => enhanceUpload(req, res, (
 
 const limitsFromSettings = async () => ({
     free: await getSettingValue('ENHANCE_LIMIT_FREE', undefined),
+    basic: await getSettingValue('ENHANCE_LIMIT_BASIC', undefined),
     small_business: await getSettingValue('ENHANCE_LIMIT_SMALL_BUSINESS', undefined),
     corporate: await getSettingValue('ENHANCE_LIMIT_CORPORATE', undefined),
 });

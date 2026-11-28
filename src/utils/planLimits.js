@@ -16,13 +16,33 @@ import { isPlatformStoreUser } from '../constants/platformStore.js';
  * which lags expiry by up to a day.
  */
 
-export const PAID_TIERS = ['small_business', 'corporate'];
+/**
+ * The paid plans, cheapest first: Basic, Pro, Premium.
+ *
+ * The ids `small_business` and `corporate` are the old names of Pro and
+ * Premium. They are kept because they are stored on every subscription row
+ * and are the Google Play product ids, which can never be renamed; only the
+ * names people see changed (TIER_NAMES). `basic` is the tier added below them.
+ */
+export const PAID_TIERS = ['basic', 'small_business', 'corporate'];
 
 export const TIER_NAMES = {
     free: 'Free',
-    small_business: 'Small Business',
-    corporate: 'Corporate'
+    basic: 'Basic',
+    small_business: 'Pro',
+    corporate: 'Premium'
 };
+
+/** Free < Basic < Pro < Premium. An unknown plan ranks as Free. */
+export const TIER_RANK = Object.freeze({ free: 0, basic: 1, small_business: 2, corporate: 3 });
+export const tierRank = (tier) => TIER_RANK[tier] ?? 0;
+
+/** Plans that may start audio and video calls: Pro and Premium, not Basic. */
+export const CALLING_TIERS = ['small_business', 'corporate'];
+export const tierHasCalling = (tier) => CALLING_TIERS.includes(tier);
+
+/** The cheapest plan that lifts each limit, for "upgrade to ..." wording. */
+export const UNLIMITED_POSTS_TIER = 'small_business';
 
 const positiveIntFromEnv = (name, fallback) => {
     const parsed = Number.parseInt(process.env[name], 10);
@@ -34,6 +54,12 @@ export const PLAN_LIMITS = Object.freeze({
         postsPerMonth: positiveIntFromEnv('FREE_MONTHLY_POST_LIMIT', 10),
         productCatalog: 10,
         insightsMaxDays: 7,
+        boost: null
+    }),
+    basic: Object.freeze({
+        postsPerMonth: positiveIntFromEnv('BASIC_MONTHLY_POST_LIMIT', 30),
+        productCatalog: 25,
+        insightsMaxDays: 14,
         boost: null
     }),
     small_business: Object.freeze({
@@ -106,9 +132,9 @@ const formatDayMonthIST = (date) =>
 /**
  * How many posts the account may still create this month.
  *
- * Applies only to an account that is in business mode AND has no active paid
- * subscription. Personal accounts, paid accounts and the platform store account
- * are never limited. Counts every Post document the user authored this IST
+ * Applies only to an account that is in business mode AND is on a plan with a
+ * monthly cap (Free and Basic). Personal accounts, Pro and Premium accounts and
+ * the platform store account are never limited. Counts every Post document the user authored this IST
  * month regardless of type or status (status is client-controlled, so filtering
  * on it would be dodgeable). Stories are a separate collection and are excluded.
  *
@@ -144,11 +170,14 @@ export const getPostQuota = async (userId) => {
 
 export const buildPostLimitError = (quota, requested = 1) => {
     const resetLabel = formatDayMonthIST(quota.resetsAt);
+    const planName = TIER_NAMES[quota.tier] || TIER_NAMES.free;
+    const unlimitedPlan = TIER_NAMES[UNLIMITED_POSTS_TIER];
+    const usedUp = `You've used all ${quota.limit} posts for this month on the ${planName} plan. Upgrade to ${unlimitedPlan} for unlimited posts, or post again from ${resetLabel}.`;
     const message = requested > 1
         ? (quota.remaining > 0
-            ? `This batch has ${requested} posts but you have ${quota.remaining} left this month on the Free plan (limit ${quota.limit}). Remove ${requested - quota.remaining} or upgrade for unlimited posts.`
-            : `You've used all ${quota.limit} posts for this month on the Free plan. Upgrade to Small Business for unlimited posts, or post again from ${resetLabel}.`)
-        : `You've used all ${quota.limit} posts for this month on the Free plan. Upgrade to Small Business for unlimited posts, or post again from ${resetLabel}.`;
+            ? `This batch has ${requested} posts but you have ${quota.remaining} left this month on the ${planName} plan (limit ${quota.limit}). Remove ${requested - quota.remaining} or upgrade for unlimited posts.`
+            : usedUp)
+        : usedUp;
 
     // `errors` is an OBJECT on purpose. The app's HTTP client treats a 403 whose
     // `errors` is a LIST as the legal re-acceptance gate; an object is ignored by
@@ -163,7 +192,8 @@ export const buildPostLimitError = (quota, requested = 1) => {
         remaining: quota.remaining,
         requested,
         resetsAt: quota.resetsAt.toISOString(),
-        availablePlans: PAID_TIERS
+        // Only the plans that would actually help: the ones above this one.
+        availablePlans: PAID_TIERS.filter((plan) => tierRank(plan) > tierRank(quota.tier))
     });
 };
 
@@ -208,15 +238,18 @@ export const getProductCatalogUsage = async (userId) => {
 
 export const buildProductLimitError = (usage, adding = 1) => {
     const planName = TIER_NAMES[usage.tier];
-    const upgradeTo = usage.tier === 'free' ? 'small_business' : 'corporate';
+    // The next plan up: Free -> Basic -> Pro -> Premium.
+    const upgradeTo = PAID_TIERS.find((plan) => tierRank(plan) > tierRank(usage.tier)) || 'corporate';
+    const upgradeName = TIER_NAMES[upgradeTo];
+    const upgradeLimit = PLAN_LIMITS[upgradeTo].productCatalog;
 
     let message;
     if (adding > 1) {
         message = `This would add ${adding} products but you have room for ${usage.remaining} more on the ${planName} plan (limit ${usage.limit}). Remove some from the batch, delete older products, or upgrade.`;
-    } else if (usage.tier === 'free') {
-        message = `You've reached the Free plan limit of ${usage.limit} products. Delete a product or upgrade to Small Business to list up to ${PLAN_LIMITS.small_business.productCatalog}.`;
+    } else if (upgradeLimit == null) {
+        message = `You've reached the ${planName} limit of ${usage.limit} products. Delete a product or upgrade to ${upgradeName} for an unlimited catalogue.`;
     } else {
-        message = `You've reached the ${planName} limit of ${usage.limit} products. Delete a product or upgrade to Corporate for an unlimited catalogue.`;
+        message = `You've reached the ${planName} plan limit of ${usage.limit} products. Delete a product or upgrade to ${upgradeName} to list up to ${upgradeLimit}.`;
     }
 
     return new ApiError(403, message, {
@@ -229,7 +262,7 @@ export const buildProductLimitError = (usage, adding = 1) => {
         remaining: usage.remaining,
         requested: adding,
         upgradeTo,
-        availablePlans: PAID_TIERS
+        availablePlans: PAID_TIERS.filter((plan) => tierRank(plan) > tierRank(usage.tier))
     });
 };
 

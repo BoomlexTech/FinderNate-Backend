@@ -23,8 +23,10 @@ export const FEEDBACK_CATEGORIES = [
     'Other'
 ];
 
+// Basic shares the standard queue with Free; priority support starts at Pro.
 const PRIORITY_BY_TIER = {
     free: { priority: 'standard', priorityRank: 0 },
+    basic: { priority: 'standard', priorityRank: 0 },
     small_business: { priority: 'priority', priorityRank: 1 },
     corporate: { priority: 'dedicated', priorityRank: 2 }
 };

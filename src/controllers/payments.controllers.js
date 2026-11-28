@@ -37,6 +37,7 @@ import Chat from "../models/chat.models.js";
 import Message from "../models/message.models.js";
 import socketManager from "../config/socket.js";
 import { publicApiUrl } from "../utils/publicUrls.js";
+import { publicServicePlace } from "../utils/serviceAddress.utils.js";
 
 // Always use configured FRONTEND_URL for payment links (never use request origin)
 const getFrontendUrl = () => {
@@ -1151,9 +1152,8 @@ export const getCheckoutByLinkId = asyncHandler(async (req, res) => {
         deliveryOptions = s.deliveryOptions || "offline";
         shippingCharges = (s.additionalCharges || 0) + (s.shippingCharges || 0);
         gstPercent = s.gstPercent || 0;
-        if (s.location) {
-            sellerLocation = s.location.name || s.location.address || s.location.city || "";
-        }
+        // Never the street address when the seller chose to hide it.
+        sellerLocation = publicServicePlace(s);
     }
 
     // ── Price breakdown must match what create-order will actually charge ─────
@@ -1897,9 +1897,8 @@ export const sendCheckoutMessage = asyncHandler(async (req, res) => {
         // additionalCharges is the primary extra-fee field for services; shippingCharges covers physical delivery if any
         shippingCharges = (s.additionalCharges || 0) + (s.shippingCharges || 0);
         gstPercent = s.gstPercent || 0;
-        if (s.location) {
-            sellerLocation = s.location.name || s.location.address || s.location.city || "";
-        }
+        // Never the street address when the seller chose to hide it.
+        sellerLocation = publicServicePlace(s);
     }
 
     // If no price, return negotiation mode

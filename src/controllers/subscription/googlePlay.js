@@ -30,6 +30,7 @@ import {
     fingerprintToken
 } from '../../utils/monitoring.utils.js';
 import { SUBSCRIPTION_PLANS, PLAY_PRODUCT_TO_PLAN } from './plans.js';
+import { tierHasCalling } from '../../utils/planLimits.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Google Play Billing activation.
@@ -547,7 +548,7 @@ const buildVerifyResponse = async ({ userId, subscription, plan, message, paymen
     const Business = (await import('../../models/business.models.js')).default;
     const businessDoc = await Business.findOne({ userId });
 
-    const hasCallingAccess = ['small_business', 'corporate'].includes(plan);
+    const hasCallingAccess = tierHasCalling(plan);
 
     return {
         subscription: toPublicSubscription(subscription),

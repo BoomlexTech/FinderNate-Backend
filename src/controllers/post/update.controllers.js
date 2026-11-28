@@ -9,6 +9,14 @@ import mongoose from "mongoose";
 import { interactionSettingsOf } from "./visibility.js";
 import { resolveMentions, notifyMentions } from "../../utils/mentions.utils.js";
 import { normalizeSubcategories } from "../../utils/postExtras.utils.js";
+import {
+    readHideAddress,
+    splitServiceAddress,
+    withoutStreetAddress,
+    savePrivateServiceAddress,
+    getPrivateServiceAddress,
+    deletePrivateServiceAddress,
+} from "../../utils/serviceAddress.utils.js";
 
 export const editPost = asyncHandler(async (req, res) => {
     const { postId } = req.params;
@@ -42,10 +50,55 @@ export const editPost = asyncHandler(async (req, res) => {
     const parsedService = typeof service === "string" ? JSON.parse(service) : service;
     const parsedBusiness = typeof business === "string" ? JSON.parse(business) : business;
 
-    let resolvedLocation = parsedLocation || post.customization?.normal?.location;
-    if (parsedLocation && (parsedLocation.name || parsedLocation.address) && !parsedLocation.coordinates) {
+    // ── "Hide address" on a service post (utils/serviceAddress.utils.js) ─────
+    // A hidden street address is never stored on the post: this edit's copy of
+    // it is taken out of the location before anything below uses it, and kept
+    // privately once the post has been saved.
+    const isService = post.contentType === "service";
+    const storedCustomization = post.customization?.toObject?.() || {};
+    const addressWasHidden = isService && storedCustomization.service?.hideAddress === true;
+    const addressHiddenNow = isService && (
+        parsedService && parsedService.hideAddress !== undefined
+            ? readHideAddress(parsedService)
+            : addressWasHidden
+    );
+    let privateAddressToSave = '';
+    let effectiveLocation = parsedLocation;
+    let effectiveService = parsedService;
+
+    if (addressHiddenNow) {
+        // Hiding now may be the first time: an address already on the post
+        // moves to the private store with it.
+        const storedAddress = storedCustomization.service?.location?.address
+            || storedCustomization.normal?.location?.address
+            || '';
+        const split = splitServiceAddress({ ...(parsedService || {}), hideAddress: true }, parsedLocation);
+        effectiveLocation = split.location;
+        if (parsedService) effectiveService = split.service;
+        privateAddressToSave = split.privateAddress || String(storedAddress).trim();
+    } else if (addressWasHidden) {
+        // The owner is showing the address again. If this edit did not send
+        // one, the one that was kept privately comes back.
+        const sentAddress = String(parsedLocation?.address || parsedService?.location?.address || '').trim();
+        if (!sentAddress) {
+            const savedAddress = await getPrivateServiceAddress(postId, userId);
+            if (savedAddress) {
+                effectiveLocation = {
+                    ...(parsedLocation || storedCustomization.normal?.location || {}),
+                    address: savedAddress
+                };
+                // Placed again below, now from the full address.
+                delete effectiveLocation.coordinates;
+            }
+        }
+    }
+
+    // The stored location as a plain object (not the Mongoose subdocument), so
+    // it can be copied and have fields taken out below.
+    let resolvedLocation = effectiveLocation || storedCustomization.normal?.location;
+    if (effectiveLocation && (effectiveLocation.name || effectiveLocation.address) && !effectiveLocation.coordinates) {
         try {
-            const coords = await getCoordinates(parsedLocation);
+            const coords = await getCoordinates(effectiveLocation);
             if (coords?.latitude && coords?.longitude) {
                 resolvedLocation.coordinates = {
                     type: "Point",
@@ -121,12 +174,12 @@ export const editPost = asyncHandler(async (req, res) => {
                 parsedProduct.location, customization.product?.location);
         }
         customization.product = { ...(customization.product || {}), ...parsedProduct };
-    } else if (post.contentType === "service" && parsedService) {
-        if (parsedService.location) {
-            parsedService.location = await regeocodeNested(
-                parsedService.location, customization.service?.location);
+    } else if (post.contentType === "service" && effectiveService) {
+        if (effectiveService.location) {
+            effectiveService.location = await regeocodeNested(
+                effectiveService.location, customization.service?.location);
         }
-        customization.service = { ...(customization.service || {}), ...parsedService };
+        customization.service = { ...(customization.service || {}), ...effectiveService };
     } else if (post.contentType === "business" && parsedBusiness) {
         if (parsedBusiness.location) {
             parsedBusiness.location = await regeocodeNested(
@@ -148,6 +201,24 @@ export const editPost = asyncHandler(async (req, res) => {
         tags: parsedTags || customization.normal?.tags || [],
         location: resolvedLocation || customization.normal?.location
     };
+
+    // "Hide address", applied to what is about to be stored. This covers the
+    // address that was ALREADY on the post when the owner turns hiding on
+    // without sending the location again.
+    if (isService && (addressHiddenNow || addressWasHidden)) {
+        customization.service = { ...(customization.service || {}), hideAddress: addressHiddenNow };
+        if (addressHiddenNow) {
+            if (customization.service.location) {
+                customization.service.location = withoutStreetAddress(customization.service.location);
+            }
+            if (customization.normal.location) {
+                customization.normal.location = withoutStreetAddress(customization.normal.location);
+            }
+        } else if (effectiveLocation?.address) {
+            // Shown again: the service's own location follows the post's.
+            customization.service.location = { ...(customization.service.location || {}), ...resolvedLocation };
+        }
+    }
 
     updateData.customization = customization;
 
@@ -178,6 +249,14 @@ export const editPost = asyncHandler(async (req, res) => {
         { $set: updateData },
         { new: true, runValidators: true }
     ).populate('userId', 'username fullName profileImageUrl');
+
+    if (isService) {
+        if (addressHiddenNow && privateAddressToSave) {
+            await savePrivateServiceAddress(postId, userId, privateAddressToSave);
+        } else if (!addressHiddenNow && addressWasHidden) {
+            await deletePrivateServiceAddress(postId);
+        }
+    }
 
     await FeedCacheManager.invalidateUserFeed(userId);
 

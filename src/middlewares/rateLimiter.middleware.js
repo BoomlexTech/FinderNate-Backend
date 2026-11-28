@@ -339,6 +339,27 @@ export const guestCheckoutIpRateLimit = rateLimit({
     store: new RedisStore({ prefix: 'rl:guestco:ip:', windowMs: 10 * 60 * 1000 })
 });
 
+// GET /meta/places/search and /meta/places/reverse. Each one that misses our
+// own memory asks OpenStreetMap's free search services, which have fair-use
+// rules and would block this server's address if it hammered them. A person
+// typing a place name makes a handful of requests; 90 a minute per caller is
+// far above that and far below abuse. Keyed by IP because the forms that use
+// it (sign-up, guest checkout) work without an account. Fails open: it is
+// traffic shaping, not a security control.
+export const placesLookupRateLimit = rateLimit({
+    windowMs: 60 * 1000, // 1 minute
+    max: 90,
+    message: {
+        error: 'Too many place lookups. Please wait a moment and try again.',
+        retryAfter: 60
+    },
+    standardHeaders: true,
+    legacyHeaders: false,
+    skip: (req) => req.method === 'OPTIONS',
+    passOnStoreError: true,
+    store: new RedisStore({ prefix: 'rl:places:', windowMs: 60 * 1000 })
+});
+
 // Support requests from one signed-in account. Generous for a real person with a
 // problem, but it bounds what a loop can do to the admin inbox and to the shared
 // SMTP quota that password-reset and OTP mail also depend on. Keyed by user id

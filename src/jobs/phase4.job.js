@@ -3,6 +3,7 @@ import { runAdLifecycle } from '../controllers/ads.controllers.js';
 import { runListingExpiry } from '../controllers/listings.controllers.js';
 import { reconcilePendingPlatformPayments } from '../controllers/platformPayments.controllers.js';
 import { runBusinessViewDigest, runKycMaintenance, runPlusReminders } from '../controllers/businessGrowth.controllers.js';
+import { syncPlusTicks } from '../utils/plusBadge.js';
 
 /**
  * Phase 4 background work:
@@ -12,6 +13,7 @@ import { runBusinessViewDigest, runKycMaintenance, runPlusReminders } from '../c
  *  - stored visibility tiers and the Q10 recheck (#74)      hourly
  *  - "people viewed your profile" digest (#75)             daily 20:05 IST
  *  - Findernate Plus reminders (#77)                        daily 10:20 IST
+ *  - the blue tick follows Findernate Plus                  hourly, and once at start
  */
 const safe = (label, fn) => () => fn().catch((e) => console.error(`[phase4] ${label} failed:`, e?.message || e));
 
@@ -22,4 +24,8 @@ export const startPhase4Jobs = () => {
     cron.schedule('35 * * * *', safe('kyc', runKycMaintenance));
     cron.schedule('5 20 * * *', safe('views digest', runBusinessViewDigest), { timezone: 'Asia/Kolkata' });
     cron.schedule('20 10 * * *', safe('plus reminders', runPlusReminders), { timezone: 'Asia/Kolkata' });
+    cron.schedule('50 * * * *', safe('plus ticks', syncPlusTicks));
+    // Once shortly after start, so accounts that already had Plus when this
+    // shipped get their tick without waiting for the first hourly run.
+    setTimeout(safe('plus ticks (start)', syncPlusTicks), 60 * 1000).unref?.();
 };

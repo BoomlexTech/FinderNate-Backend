@@ -1,4 +1,6 @@
 import { recordProfileVisit } from '../profileVisitors.controllers.js';
+import { hasBlueTick, isPlusActive } from '../../utils/plusBadge.js';
+import ServicePrivateAddress from '../../models/servicePrivateAddress.models.js';
 import { asyncHandler } from "../../utils/asyncHandler.js";
 import { User } from "../../models/user.models.js";
 import { ApiError } from "../../utils/ApiError.js";
@@ -70,7 +72,7 @@ const getUserProfile = asyncHandler(async (req, res) => {
      */
     const readLiveSettings = async () => {
         const settingsUser = await User.findById(userId)
-            .select('isBusinessProfile isPhoneNumberHidden isAddressHidden phoneNumber address isPhoneVerified privacy isFullPrivate messagingPrivacy servicePostPreferences productPostPreferences')
+            .select('isBusinessProfile isPhoneNumberHidden isAddressHidden phoneNumber address isPhoneVerified isEmailVerified isBlueTickVerified blueTickFromPlus plusUntil privacy isFullPrivate messagingPrivacy servicePostPreferences productPostPreferences')
             .lean();
 
         if (!settingsUser) return null;
@@ -98,6 +100,13 @@ const getUserProfile = asyncHandler(async (req, res) => {
             phoneNumber: settingsUser.phoneNumber ?? null,
             address: settingsUser.address ?? null,
             isPhoneVerified: settingsUser.isPhoneVerified,
+            // Read live for the same reason as the switches: verifying the
+            // email address is what unlocks the switch to business, and paying
+            // for Findernate Plus gives the blue tick at once. Neither should
+            // wait out the snapshot's hour.
+            isEmailVerified: settingsUser.isEmailVerified === true,
+            isBlueTickVerified: hasBlueTick(settingsUser),
+            isPlusActive: isPlusActive(settingsUser),
             isPhoneNumberHidden: settingsUser.isPhoneNumberHidden,
             isAddressHidden: settingsUser.isAddressHidden,
             privacy: settingsUser.privacy,
@@ -414,6 +423,11 @@ const getOtherUserProfile = asyncHandler(async (req, res) => {
         businessId: businessId,
         isEmailVerified: targetUser.isEmailVerified,
         isPhoneVerified: targetUser.isPhoneVerified,
+        // The blue tick: an admin-verified account, or a personal account on
+        // Findernate Plus (for as long as it is active). Both clients draw it
+        // from this field, which this answer used to leave out, so the tick
+        // never showed on anyone else's profile.
+        isBlueTickVerified: hasBlueTick(targetUser),
         isContentVisible: targetUser.isBusinessProfile ? isContentVisible : true,
         contentVisibilityMessage: targetUser.isBusinessProfile && !isContentVisible
             ? 'Product, service and business listings are not promoted until this business upgrades.'
@@ -492,6 +506,8 @@ const deleteAccount = asyncHandler(async (req, res) => {
 
     const cleanupResults = await Promise.allSettled([
         Post.deleteMany({ userId }),
+        // Hidden street addresses of this user's service posts.
+        ServicePrivateAddress.deleteMany({ userId }),
         Reel.deleteMany({ userId }),
         Comment.deleteMany({ userId }),
         Like.deleteMany({ userId }),

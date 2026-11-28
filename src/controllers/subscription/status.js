@@ -8,7 +8,9 @@ import {
     PAID_TIERS,
     PLAN_LIMITS,
     getPostQuota,
-    getProductCatalogUsage
+    getProductCatalogUsage,
+    tierHasCalling,
+    tierRank
 } from '../../utils/planLimits.js';
 import { PLAY_PACKAGE_NAME } from '../../config/googlePlay.config.js';
 import { toPublicSubscription } from './activation.js';
@@ -92,7 +94,8 @@ export const getSubscriptionStatus = asyncHandler(async (req, res) => {
     });
 
     const subscriptionTier = subscription ? subscription.plan : 'free';
-    const hasCallingAccess = !!subscription && PAID_TIERS.includes(subscription.plan);
+    // Calling comes with Pro and Premium, not with Basic.
+    const hasCallingAccess = !!subscription && tierHasCalling(subscription.plan);
 
     const [postQuota, productCatalog, accountManager] = await Promise.all([
         getPostQuota(userId),
@@ -135,7 +138,7 @@ export const getSubscriptionStatus = asyncHandler(async (req, res) => {
                     : null,
                 insights: {
                     maxDays: PLAN_LIMITS[subscriptionTier].insightsMaxDays,
-                    advanced: subscriptionTier !== 'free',
+                    advanced: tierRank(subscriptionTier) >= tierRank('small_business'),
                     comparisons: subscriptionTier === 'corporate',
                     export: subscriptionTier === 'corporate'
                 },
@@ -144,7 +147,7 @@ export const getSubscriptionStatus = asyncHandler(async (req, res) => {
                     ...(boostLimits || {})
                 },
                 support: {
-                    priority: subscriptionTier === 'free' ? 'standard' : subscriptionTier === 'corporate' ? 'dedicated' : 'priority'
+                    priority: subscriptionTier === 'corporate' ? 'dedicated' : subscriptionTier === 'small_business' ? 'priority' : 'standard'
                 },
                 accountManager
             }
@@ -166,7 +169,9 @@ export const checkFeatureAccess = asyncHandler(async (req, res) => {
     });
 
     const subscriptionTier = subscription ? subscription.plan : 'free';
-    const isPaid = !!subscription && PAID_TIERS.includes(subscription.plan);
+    // Every feature asked about below starts at Pro (small_business); Basic
+    // gives the badge and public posts, which are not asked about here.
+    const isProOrAbove = !!subscription && tierRank(subscription.plan) >= tierRank('small_business');
 
     let hasAccess = false;
     let requiredTier = null;
@@ -180,7 +185,7 @@ export const checkFeatureAccess = asyncHandler(async (req, res) => {
         case 'advanced_analytics':
         case 'boost':
         case 'priority_support':
-            hasAccess = isPaid;
+            hasAccess = isProOrAbove;
             requiredTier = hasAccess ? null : 'small_business';
             break;
 
@@ -202,7 +207,8 @@ export const checkFeatureAccess = asyncHandler(async (req, res) => {
         case 'product_catalog': {
             const usage = await getProductCatalogUsage(userId);
             hasAccess = usage.unlimited || usage.remaining > 0;
-            requiredTier = hasAccess ? null : (usage.tier === 'free' ? 'small_business' : 'corporate');
+            // The next plan up from the one that is full.
+            requiredTier = hasAccess ? null : (PAID_TIERS.find((plan) => tierRank(plan) > tierRank(usage.tier)) || 'corporate');
             extra = { limit: usage.limit, used: usage.used, remaining: usage.remaining };
             break;
         }

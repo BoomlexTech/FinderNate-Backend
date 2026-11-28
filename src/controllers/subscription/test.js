@@ -6,6 +6,7 @@ import { User } from '../../models/user.models.js';
 
 const PLAN_TO_BUSINESS_PLAN = {
     free: 'plan1',
+    basic: 'basic',
     small_business: 'plan2',
     corporate: 'plan3'
 };
@@ -18,7 +19,7 @@ export const testUpgradeSubscription = asyncHandler(async (req, res) => {
     const userId = req.user._id;
     const { plan } = req.body;
 
-    const validPlans = ['free', 'small_business', 'corporate'];
+    const validPlans = ['free', 'basic', 'small_business', 'corporate'];
     if (!plan || !validPlans.includes(plan)) {
         throw new ApiError(400, `Invalid plan. Must be one of: ${validPlans.join(', ')}`);
     }

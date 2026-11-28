@@ -2,10 +2,10 @@ import { asyncHandler } from "../utils/asyncHandler.js";
 import { ApiError } from "../utils/ApiError.js";
 import { User } from "../models/user.models.js";
 import Subscription from "../models/subscription.models.js";
-import { getPostQuota, getPostQuotaMode, buildPostLimitError } from "../utils/planLimits.js";
+import { getPostQuota, getPostQuotaMode, buildPostLimitError, CALLING_TIERS } from "../utils/planLimits.js";
 
 /**
- * Monthly post cap for Free business accounts.
+ * Monthly post cap for Free and Basic business accounts.
  *
  * Mount AFTER verifyJWT (and after multer on the create routes, so that a batch's
  * `req.body.posts` has been parsed). Runs before the controller, so a blocked
@@ -59,7 +59,8 @@ export const batchPostCount = (req) => {
 /**
  * Middleware to verify user has calling features access
  * Free users are blocked from audio and video calls
- * Paid users (small_business, corporate) and business profiles have access
+ * Pro (small_business) and Premium (corporate) subscribers have access;
+ * Free and Basic do not.
  */
 export const verifyCallingAccess = asyncHandler(async (req, res, next) => {
     try {
@@ -80,17 +81,19 @@ export const verifyCallingAccess = asyncHandler(async (req, res, next) => {
         req.user.subscriptionTier = subscriptionTier;
         req.user.isBusinessProfile = isBusinessProfile;
 
-        // Only paid plans (small_business or corporate) have calling access
-        if (!subscription || !['small_business', 'corporate'].includes(subscription.plan)) {
-            throw new ApiError(403, "Calling features are not available for free users. Please upgrade your subscription to access audio and video calls.", {
+        // Calling comes with Pro (small_business) and Premium (corporate).
+        if (!subscription || !CALLING_TIERS.includes(subscription.plan)) {
+            const message = subscriptionTier === 'basic'
+                ? "Audio and video calls are not part of the Basic plan. Upgrade to Pro or Premium to make calls."
+                : "Calling features are not available for free users. Please upgrade your subscription to access audio and video calls.";
+            throw new ApiError(403, message, {
                 errorCode: 'CALLING_FEATURE_RESTRICTED',
                 subscriptionTier: subscriptionTier,
                 requiresUpgrade: true,
-                availablePlans: ['small_business', 'corporate']
+                availablePlans: CALLING_TIERS
             });
         }
 
-        // All paid plans have calling access
         next();
     } catch (error) {
         // If error is already an ApiError, throw it
@@ -124,7 +127,7 @@ export const attachSubscriptionInfo = asyncHandler(async (req, res, next) => {
         const subscriptionTier = subscription ? subscription.plan : 'free';
         req.user.subscriptionTier = subscriptionTier;
         req.user.isBusinessProfile = isBusinessProfile;
-        req.user.hasCallingAccess = subscription && ['small_business', 'corporate'].includes(subscription.plan);
+        req.user.hasCallingAccess = subscription && CALLING_TIERS.includes(subscription.plan);
 
         next();
     } catch (error) {
@@ -152,7 +155,7 @@ export const getUserSubscription = async (userId) => {
             tier: subscription ? subscription.plan : 'free',
             hasActiveSubscription: !!subscription,
             subscription: subscription,
-            hasCallingAccess: subscription && ['small_business', 'corporate'].includes(subscription.plan)
+            hasCallingAccess: subscription && CALLING_TIERS.includes(subscription.plan)
         };
     } catch (error) {
         console.error('Error getting user subscription:', error);

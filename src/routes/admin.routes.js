@@ -3,6 +3,7 @@ import { adminKycQueue, adminKycDecision } from "../controllers/kyc.controllers.
 import { adminListAds, adminRejectAd } from "../controllers/ads.controllers.js";
 import { adminListings, adminListingDecision } from "../controllers/listings.controllers.js";
 import { adminB2bStatements } from "../controllers/businessGrowth.controllers.js";
+import { adminGetAppUpdate, adminAnnounceAppUpdate } from "../controllers/appUpdate.controllers.js";
 import { adminListSounds, adminCreateSound, adminUpdateSound, adminDeleteSound, adminSoundUpload } from "../controllers/sounds.controllers.js";
 import {
     // Authentication
@@ -273,6 +274,13 @@ router.route("/settings")
 router.route("/settings/:key")
     .get(requirePermission('systemSettings'), getSetting)
     .put(requirePermission('systemSettings'), updateSetting);
+
+// "A new app version is available": announce it, which notifies every Android
+// phone on an older version. It reaches every user, so it takes the same
+// high-trust permission as the settings above.
+router.route("/app-update")
+    .get(requirePermission('systemSettings'), adminGetAppUpdate)
+    .post(requirePermission('systemSettings'), adminAnnounceAppUpdate);
 
 // ===============================
 // MONITORING ROUTES

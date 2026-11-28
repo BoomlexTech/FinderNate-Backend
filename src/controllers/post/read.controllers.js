@@ -1,6 +1,7 @@
 import { authorOrCollabFilter, attachCollaborators } from '../../utils/collab.utils.js';
 import { canViewCommercialPost, filterCommercialPosts } from '../../utils/businessVisibility.utils.js';
 import { annotateSeen } from '../../utils/seenFlags.utils.js';
+import { getPrivateServiceAddress } from '../../utils/serviceAddress.utils.js';
 import mongoose from 'mongoose';
 import { asyncHandler } from "../../utils/asyncHandler.js";
 import { ApiError } from "../../utils/ApiError.js";
@@ -236,6 +237,16 @@ export const getPostById = asyncHandler(async (req, res) => {
     if (currentUser) {
         const preview = getLikedByPreview(likedByUsers, currentUser._id.toString());
         post.likedByPreview = preview.likedByText ? { text: preview.likedByText, previewUser: preview.previewUser, othersCount: preview.othersCount } : null;
+    }
+
+    // "Hide address": the owner of a service post gets the address they hid,
+    // so it can be shown in their own edit form. Nobody else is sent it; it is
+    // not on the post at all (utils/serviceAddress.utils.js).
+    if (post.contentType === 'service' && post.customization?.service?.hideAddress === true) {
+        const ownerId = String(post.userId?._id || post.userId || '');
+        if (currentUser && ownerId === String(currentUser._id)) {
+            post.customization.service.privateAddress = await getPrivateServiceAddress(post._id, currentUser._id);
+        }
     }
 
     // Collab co-authors and seen flags (#50, #33).

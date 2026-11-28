@@ -13,12 +13,50 @@ const invalidateProfileCache = async (userId) => {
     await UserCacheManager.invalidateUserProfile(userId.toString());
 };
 
+/**
+ * Both contact channels must be verified before an account becomes a business.
+ *
+ * A business account sells to strangers, so both ways of reaching its owner
+ * have to be proven first: the email address AND the mobile number. Sign-up
+ * proves only one of them (the channel the code was sent to); the other is
+ * verified from Settings.
+ *
+ * Asked only while the account is still personal, i.e. when business mode is
+ * being turned ON. An account that is already a business is left alone, so
+ * nobody is locked out of a business they are running today.
+ *
+ * The error carries `VERIFICATION_REQUIRED` with what is missing, so the app
+ * and the website can send the person straight to the right verify screen.
+ * `errors` is an OBJECT, like the other feature gates (CALLING_FEATURE_
+ * RESTRICTED, POST_LIMIT_REACHED): the app reads a 403 whose `errors` is a
+ * LIST as the legal re-acceptance gate.
+ */
+export const assertContactsVerifiedForBusiness = (user) => {
+    if (!user || user.isBusinessProfile) return;
+
+    const emailVerified = user.isEmailVerified === true;
+    const phoneVerified = user.isPhoneVerified === true;
+    if (emailVerified && phoneVerified) return;
+
+    const missing = !emailVerified && !phoneVerified
+        ? "email address and mobile number"
+        : !emailVerified ? "email address" : "mobile number";
+
+    throw new ApiError(403, `Verify your ${missing} before switching to a business account.`, {
+        errorCode: "VERIFICATION_REQUIRED",
+        emailVerified,
+        phoneVerified
+    });
+};
+
 // POST /api/v1/users/switch-to-business
 export const switchTobusinessprofile = asyncHandler(async (req, res) => {
     const userId = req.user._id;
 
     const user = await User.findById(userId);
     if (!user) throw new ApiError(404, "User not found");
+
+    assertContactsVerifiedForBusiness(user);
 
     let business = await Business.findOne({ userId });
 

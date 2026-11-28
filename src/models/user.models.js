@@ -78,6 +78,9 @@ const UserSchema = new mongoose.Schema({
     isBusinessProfile: { type: Boolean, default: false },
     businessProfileId: { type: mongoose.Schema.Types.ObjectId, ref: 'Business' },
     isBlueTickVerified: { type: Boolean, default: false },
+    // The tick above came with Findernate Plus (utils/plusBadge.js), so it is
+    // taken away when Plus ends. False for a tick an admin granted by hand.
+    blueTickFromPlus: { type: Boolean, default: false },
     isEmailVerified: { type: Boolean, default: false },
     emailVerificationToken: { type: String },
     emailOTPExpiry: { type: Date },

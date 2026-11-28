@@ -44,7 +44,7 @@ export const getPushTargets = async (userIds) => {
     return targets.map((t) => ({ ...t, sharedDevice: (perToken.get(t.token) || 0) > 1 }));
 };
 
-const isDeadTokenError = (error) =>
+export const isDeadTokenError = (error) =>
     error?.code === 'messaging/registration-token-not-registered' ||
     error?.code === 'messaging/invalid-registration-token' ||
     error?.code === 'messaging/invalid-argument' ||

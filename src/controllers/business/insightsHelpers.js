@@ -29,7 +29,9 @@ export const SHARE_RETENTION_DAYS = 90;
 // Fewer engagement events than this and "best hour" is noise, not a finding.
 export const MIN_EVENTS_FOR_BEST_TIME = 10;
 
-const TIER_RANK = { free: 0, small_business: 1, corporate: 2 };
+// Free < Basic < Pro (small_business) < Premium (corporate). Basic gets the
+// same sections as Free, over a longer period (PLAN_LIMITS.basic.insightsMaxDays).
+const TIER_RANK = { free: 0, basic: 1, small_business: 2, corporate: 3 };
 
 // The tier each section needs. The order is the order clients show upsells in.
 const SECTION_TIERS = {

@@ -6,6 +6,7 @@ import Post from "../../models/userPost.models.js";
 import { deleteMultipleFromBunny } from "../../utils/bunny.js";
 import { validateDeliveryAndLocation } from "../../utils/deliveryValidation.js";
 import { assertProductCapacity } from "../../utils/planLimits.js";
+import { splitServiceAddress, savePrivateServiceAddress } from "../../utils/serviceAddress.utils.js";
 import {
     pushNewPostToBuffer,
     extractMediaFiles,
@@ -222,8 +223,13 @@ export const createServicePost = asyncHandler(async (req, res) => {
     const parsedSettings = parseField(settings);
     const parsedLocation = parseField(location);
 
-    const validatedService = await validateDeliveryAndLocation({ ...parsedService, location: parsedLocation }, "service");
-    const resolvedLocation = await resolveLocationCoordinates(parsedLocation);
+    // "Hide address": the street address never goes on the post. It is taken
+    // out of everything stored here and kept privately once the post exists
+    // (utils/serviceAddress.utils.js).
+    const serviceAddress = splitServiceAddress(parsedService, parsedLocation);
+
+    const validatedService = await validateDeliveryAndLocation({ ...serviceAddress.service, location: serviceAddress.location }, "service");
+    const resolvedLocation = await resolveLocationCoordinates(serviceAddress.location);
 
     const files = extractMediaFiles(req.files);
     // Publishing a draft (#70) reuses the media it already uploaded.
@@ -257,6 +263,10 @@ export const createServicePost = asyncHandler(async (req, res) => {
         isPromoted: false, isFeatured: false, isReported: false, reportCount: 0,
         engagement: {}, analytics: {},
     });
+
+    if (serviceAddress.privateAddress) {
+        await savePrivateServiceAddress(post._id, userId, serviceAddress.privateAddress);
+    }
 
     await Post.db.model('User').findByIdAndUpdate(userId, { $push: { posts: post._id } });
     if (post.status === 'published') pushNewPostToBuffer(post._id, userId).catch(() => {});
@@ -372,7 +382,9 @@ export const createBatchPosts = asyncHandler(async (req, res) => {
         const extras = await buildPostExtras(p, userId, { explicitMentions: parsedMentions, isVibe: ["reel", "video"].includes(postType) });
         const parsedTags = parseField(p.tags);
         const parsedSettings = parseField(p.settings);
-        const parsedLocation = parseField(p.location);
+        let parsedLocation = parseField(p.location);
+        // A service's hidden street address, kept privately after the create.
+        let privateAddress = '';
 
         const images = req.files?.[`post_${i}_image`] || [];
         const videos = req.files?.[`post_${i}_video`] || [];
@@ -395,8 +407,11 @@ export const createBatchPosts = asyncHandler(async (req, res) => {
             //* Optional — see the single-create path above. Left required here,
             //* the bulk endpoint would reject a whole batch over one missing URL.
         } else if (contentType === "service") {
-            const parsedService = parseField(p.service);
-            validatedDetails = await validateDeliveryAndLocation({ ...parsedService, location: parsedLocation }, "service");
+            // "Hide address": see the single-create path above.
+            const serviceAddress = splitServiceAddress(parseField(p.service), parsedLocation);
+            parsedLocation = serviceAddress.location;
+            privateAddress = serviceAddress.privateAddress;
+            validatedDetails = await validateDeliveryAndLocation({ ...serviceAddress.service, location: parsedLocation }, "service");
         } else if (contentType === "business") {
             const parsedBusiness = parseField(p.business);
             validatedDetails = await validateDeliveryAndLocation({ ...parsedBusiness, location: parsedLocation }, "business");
@@ -409,7 +424,7 @@ export const createBatchPosts = asyncHandler(async (req, res) => {
             postType, contentType,
             caption: p.caption, description: p.description,
             mood: p.mood, activity: p.activity,
-            parsedMentions, parsedTags, parsedSettings, parsedLocation,
+            parsedMentions, parsedTags, parsedSettings, parsedLocation, privateAddress,
             validatedDetails, files, thumbnail, extras, editMedia,
             scheduledAt: p.scheduledAt, publishedAt: p.publishedAt, status: p.status,
         });
@@ -492,6 +507,10 @@ export const createBatchPosts = asyncHandler(async (req, res) => {
                 isPromoted: false, isFeatured: false, isReported: false, reportCount: 0,
                 engagement: {}, analytics: {},
             }], { session });
+
+            if (p.privateAddress) {
+                await savePrivateServiceAddress(created._id, userId, p.privateAddress, session);
+            }
 
             createdPosts.push(created);
         }

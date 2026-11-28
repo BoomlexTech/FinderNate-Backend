@@ -1,11 +1,35 @@
 import { ApiError } from "./ApiError.js";
 import { getCoordinates } from "./getCoordinates.js";
 
+const DELIVERY_OPTIONS = ['online', 'offline', 'both'];
+
 /**
- * Validates delivery options and location requirements for business posts
- * @param {Object} postData - Product, Service, or Business data
+ * How a service reaches its customer, worked out from the service type when
+ * the composer did not say. The service form no longer asks "online, offline
+ * or both" (it was the same question as the service type, asked twice), so
+ * the answer is read from the type: in-person -> offline, hybrid -> both,
+ * online -> online.
+ */
+export const deliveryOptionsForServiceType = (serviceType) => {
+    const type = String(serviceType || '').trim().toLowerCase();
+    if (type === 'in-person' || type === 'offline') return 'offline';
+    if (type === 'hybrid' || type === 'both') return 'both';
+    return 'online';
+};
+
+/**
+ * Checks the delivery option of a product, service or business post, and
+ * finds the map point for its location when one was given.
+ *
+ * The location is OPTIONAL for every post type. It used to be mandatory for
+ * offline / both delivery, and a street address the map service could not
+ * place ("Shop 4, Ganesh Complex ...") refused the whole post. Now a post with
+ * no location is simply a post with no location, and one whose address cannot
+ * be placed is saved with the text and no map point.
+ *
+ * @param {Object} postData - Product, Service, or Business data (with `location`)
  * @param {string} postType - Type of post (product, service, business)
- * @returns {Object} Validated and potentially enhanced location data
+ * @returns {Object} The details, with deliveryOptions filled in and the location's coordinates when found
  */
 export const validateDeliveryAndLocation = async (postData, postType) => {
     // Every caller passes an object literal `{ ...parsed, location: parsed }`,
@@ -17,66 +41,40 @@ export const validateDeliveryAndLocation = async (postData, postType) => {
         throw new ApiError(400, `${postType} details are required`);
     }
 
-    const { deliveryOptions, location } = postData;
+    const { location } = postData;
+    let { deliveryOptions } = postData;
 
-    // Validate delivery options
+    if (!deliveryOptions && postType === 'service') {
+        deliveryOptions = deliveryOptionsForServiceType(postData.serviceType);
+    }
+
     if (!deliveryOptions) {
         throw new ApiError(400, "Delivery options (online/offline/both) are required");
     }
 
-    if (!['online', 'offline', 'both'].includes(deliveryOptions)) {
+    if (!DELIVERY_OPTIONS.includes(deliveryOptions)) {
         throw new ApiError(400, "Delivery options must be 'online', 'offline', or 'both'");
     }
 
-    // If online only, no location validation needed
-    if (deliveryOptions === 'online') {
-        return postData;
-    }
-
-    // For offline or both, location is mandatory
-    if (deliveryOptions === 'offline' || deliveryOptions === 'both') {
-        if (!location) {
-            throw new ApiError(400, `Location is mandatory when delivery option is '${deliveryOptions}'`);
-        }
-
-        // Check if basic location info is provided
-        if (!location.name && !location.address) {
-            throw new ApiError(400, "Location name or address is required for offline/both delivery options");
-        }
-
-        // If location name/address provided but no coordinates, resolve them
-        if ((location.name || location.address) && !location.coordinates) {
-            try {
-                // Pass the full location object to allow multiple fallback strategies
-                const coords = await getCoordinates(location);
-
-                if (coords?.latitude && coords?.longitude) {
-                    location.coordinates = {
-                        type: "Point",
-                        coordinates: [coords.longitude, coords.latitude]
-                    };
-                } else {
-                    const locationQuery = location.address || location.name;
-                    throw new ApiError(400, `Could not resolve coordinates for location: ${locationQuery}`);
-                }
-            } catch (error) {
-                // If it's already an ApiError, re-throw it
-                if (error instanceof ApiError) {
-                    throw error;
-                }
-                // Otherwise, wrap it
-                const locationQuery = location.address || location.name;
-                throw new ApiError(400, `Could not resolve coordinates for location: ${locationQuery}`);
+    // A location with some text and no map point yet: try to place it. Not
+    // being able to is not an error.
+    if (location && (location.name || location.address) && !location.coordinates) {
+        try {
+            // The full location object, so the lookup can fall back from the
+            // street address to the city and state.
+            const coords = await getCoordinates(location);
+            if (coords?.latitude && coords?.longitude) {
+                location.coordinates = {
+                    type: "Point",
+                    coordinates: [coords.longitude, coords.latitude]
+                };
             }
-        }
-
-        // Ensure we have either name or address
-        if (!location.name && !location.address) {
-            throw new ApiError(400, "Location must include either name or address");
+        } catch (error) {
+            console.warn(`Could not place the location of a ${postType} post on the map: ${error?.message || error}`);
         }
     }
 
-    return { ...postData, location };
+    return { ...postData, deliveryOptions, location };
 };
 
 /**
@@ -105,13 +103,11 @@ export const isValidLocation = (location) => {
 };
 
 /**
- * Helper function to check if location is required based on delivery options
- * @param {string} deliveryOptions - online, offline, or both
- * @returns {boolean} True if location is required
+ * A location is never required any more (see validateDeliveryAndLocation).
+ * Kept, returning false, for any caller that still asks.
+ * @returns {boolean} Always false
  */
-export const isLocationRequired = (deliveryOptions) => {
-    return deliveryOptions === 'offline' || deliveryOptions === 'both';
-};
+export const isLocationRequired = () => false;
 
 /**
  * Sanitize and prepare location data for database storage
@@ -140,6 +136,7 @@ export const sanitizeLocationData = (location) => {
 
 export default {
     validateDeliveryAndLocation,
+    deliveryOptionsForServiceType,
     isValidLocation,
     isLocationRequired,
     sanitizeLocationData

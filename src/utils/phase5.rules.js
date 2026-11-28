@@ -819,7 +819,7 @@ export const stickersForViewer = (stickers, isOwner) =>
 
 // ── Photo enhancer (#35) ────────────────────────────────────────────────────
 
-export const ENHANCE_DEFAULT_LIMITS = Object.freeze({ free: 5, small_business: 30, corporate: 100 });
+export const ENHANCE_DEFAULT_LIMITS = Object.freeze({ free: 5, basic: 15, small_business: 30, corporate: 100 });
 export const ENHANCE_MODES = Object.freeze(['auto', 'remove_background']);
 
 /** The monthly cap for a plan; `overrides` come from admin settings. */

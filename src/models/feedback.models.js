@@ -35,7 +35,7 @@ const FeedbackSchema = new mongoose.Schema({
     // position it was promised even if the plan lapses before it is answered.
     planAtSubmit: {
         type: String,
-        enum: ['free', 'small_business', 'corporate']
+        enum: ['free', 'basic', 'small_business', 'corporate']
     },
     priority: {
         type: String,

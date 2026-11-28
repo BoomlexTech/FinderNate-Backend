@@ -5,19 +5,22 @@ import { ApiError } from "../../utils/ApiError.js";
 import { ApiResponse } from "../../utils/ApiResponse.js";
 import { asyncHandler } from "../../utils/asyncHandler.js";
 
-const ALL_PLANS = ['plan1', 'plan2', 'plan3', 'plan4'];
+// plan1 = Free, basic = Basic, plan2 = Pro, plan3 = Premium, plan4 = legacy top tier.
+const ALL_PLANS = ['plan1', 'basic', 'plan2', 'plan3', 'plan4'];
 
 // Which business tier a *paid* subscription entitles the account to. Mirrors
 // PLAN_TO_BUSINESS_PLAN in controllers/subscription/payment.js, which is the
 // only place a Subscription row is ever written, and only after Cashfree has
 // confirmed the payment.
 const SUBSCRIPTION_TO_BUSINESS_PLAN = {
+    basic: 'basic',
     small_business: 'plan2',
     corporate: 'plan3'
 };
 
 const PLAN_ALLOWED_UPGRADES = {
-    plan1: ['plan2', 'plan3', 'plan4'],
+    plan1: ['basic', 'plan2', 'plan3', 'plan4'],
+    basic: ['plan2', 'plan3', 'plan4'],
     plan2: ['plan3', 'plan4'],
     plan3: ['plan4'],
     plan4: []
@@ -25,6 +28,9 @@ const PLAN_ALLOWED_UPGRADES = {
 
 const LEGACY_PLAN_MAP = {
     'Free': 'plan1',
+    'Basic': 'basic',
+    'Pro': 'plan2',
+    'Premium': 'plan3',
     'Small Business': 'plan2',
     'Corporate': 'plan3',
     'Enterprise': 'plan4'

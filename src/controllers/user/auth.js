@@ -5,6 +5,9 @@ import { ApiError } from "../../utils/ApiError.js";
 import { ApiResponse } from "../../utils/ApiResponse.js";
 import { v4 as uuidv4 } from "uuid";
 import { sendSms, assertSmsDeliverable } from "../../utils/sendSms.js";
+import { sendEmail } from "../../utils/sendEmail.js";
+import { renderOtpEmail } from "../../utils/emailTemplate.js";
+import { readSignupOtpMethod, resendSignupOtpMethod, verifiedFlagsFor } from "../../utils/signupOtp.rules.js";
 import { TempUser } from "../../models/tempUser.models.js";
 import { AuthOtp } from "../../models/authOtp.models.js";
 import { AcceptanceLog } from "../../models/acceptanceLog.models.js";
@@ -36,9 +39,63 @@ import {
 
 const escapeRegex = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
+const normalizeEmail = (email) => String(email ?? '').trim().toLowerCase();
+
+//* The pending signup a verify / resend call is about.
+//*
+//* TempUser rows are keyed by phone number, so the phone is the exact key when
+//* the client sends it (both clients do). An email-only call falls back to the
+//* newest pending signup for that address.
+const findPendingSignup = ({ phone, email }) => {
+    if (phone) return TempUser.findOne({ phoneNumber: normalizePhone(phone) });
+    if (email) return TempUser.findOne({ email: normalizeEmail(email) }).sort({ updatedAt: -1 });
+    return null;
+};
+
+//* Sends the signup code by SMS or by email, with the same failure handling
+//* for both: in development the code is logged so the flow can be exercised
+//* without a live gateway; a number that can never be delivered to keeps its
+//* own ApiError; anything else is a 503 "try again".
+const deliverSignupOtp = async ({ otpMethod, phone, email, otp }) => {
+    try {
+        if (otpMethod === 'email') {
+            const otpEmail = renderOtpEmail({
+                title: "Verify your email address",
+                intro: "Use the code below to finish creating your FinderNate account.",
+                code: otp,
+                expiryMs: OTP_EXPIRY_MS,
+                disclaimer: "If you didn't try to sign up, you can safely ignore this email.",
+            });
+            await sendEmail({
+                to: email,
+                subject: "Your FinderNate sign-up code",
+                html: otpEmail.html,
+                text: otpEmail.text,
+            });
+        } else {
+            await sendSms({ phone, otp, request_type: 'phonenumber_verify' });
+        }
+    } catch (sendErr) {
+        if (process.env.NODE_ENV === 'development') {
+            console.warn(`[DEV] Sign-up OTP not sent (${sendErr.message}). OTP for ${otpMethod === 'email' ? email : phone}: ${otp}`);
+        } else if (sendErr instanceof ApiError) {
+            //* sendSms raises an ApiError for a number it can NEVER deliver to
+            //* — currently anything non-Indian. That is a permanent fact about
+            //* the number, not a gateway hiccup, so it keeps its own status and
+            //* its own wording. Folded into the 503 below it would come out as
+            //* "please try again", which cannot ever work, and the client would
+            //* sit there retrying a request that is doomed by construction.
+            throw sendErr;
+        } else {
+            throw new ApiError(503, `Failed to send OTP: ${sendErr.message}. Please try again or contact support.`);
+        }
+    }
+};
+
 const registerUser = asyncHandler(async (req, res) => {
     const { fullName, username, email, password, confirmPassword, phoneNumber, dateOfBirth, gender } = req.body;
-    const request_type = 'phonenumber_verify';
+    //* Signup code by SMS or by email — the person's choice on the form.
+    const otpMethod = readSignupOtpMethod(req.body);
 
     if (!fullName || !username || !email || !password || !confirmPassword || !phoneNumber) {
         throw new ApiError(400, "All fields are required");
@@ -111,9 +168,13 @@ const registerUser = asyncHandler(async (req, res) => {
     //* mobile, where the phone field is a screen back and the error lands beside
     //* a live Submit button. Checked first, the doomed request costs nothing.
     //*
-    //* Skipped in development so the escape hatch in the catch below (log the
+    //* Skipped in development so the escape hatch in deliverSignupOtp (log the
     //* OTP, carry on) still lets these flows be exercised without a live gateway.
-    if (process.env.NODE_ENV !== 'development') assertSmsDeliverable(normalizedPhone);
+    //* Skipped for an email code too: no SMS is sent, so a number Fast2SMS
+    //* cannot reach is no reason to refuse the signup. That number is verified
+    //* later, from Settings, and it must be before the account can switch to
+    //* business (business/switch.js).
+    if (otpMethod === 'phone' && process.env.NODE_ENV !== 'development') assertSmsDeliverable(normalizedPhone);
 
     //* Email and username are unique per account; a PHONE NUMBER IS NOT —
     //* several accounts may legitimately share one, so it is deliberately not
@@ -161,6 +222,8 @@ const registerUser = asyncHandler(async (req, res) => {
             phoneNumber: normalizedPhone,
             dateOfBirth,
             gender: gender || 'prefer-not-to-say',
+            //* Where the code went, so a resend that does not say repeats it.
+            otpMethod,
             //* Pending consent. Written with `strict: false` because these are
             //* not declared on TempUserSchema — see the note in
             //* verifyRegistrationOTP, which reads them back with .lean().
@@ -181,54 +244,61 @@ const registerUser = asyncHandler(async (req, res) => {
     //* to /register sent unlimited SMS. Now it goes through the same limiter
     //* as every other OTP — per-account per day, plus a per-IP cap.
     await rateCheckAndUpsertOtp({
-        identifier: normalizedPhone,
-        type: "phone",
+        identifier: otpMethod === 'email' ? normalizedEmail : normalizedPhone,
+        type: otpMethod,
         purpose: "registration",
         hashedOtp,
         expiry,
         ip: clientIp(req),
     });
 
-    try {
-        await sendSms({ phone: normalizedPhone, otp: plainOtp, request_type });
-    } catch (smsErr) {
-        if (process.env.NODE_ENV === 'development') {
-            console.warn(`[DEV] SMS failed (${smsErr.message}). OTP for ${normalizedPhone}: ${plainOtp}`);
-        } else if (smsErr instanceof ApiError) {
-            //* sendSms raises an ApiError for a number it can NEVER deliver to
-            //* — currently anything non-Indian. That is a permanent fact about
-            //* the number, not a gateway hiccup, so it keeps its own status and
-            //* its own wording. Folded into the 503 below it would come out as
-            //* "please try again", which cannot ever work, and the client would
-            //* sit there retrying a request that is doomed by construction.
-            throw smsErr;
-        } else {
-            throw new ApiError(503, `Failed to send OTP: ${smsErr.message}. Please try again or contact support.`);
-        }
-    }
+    await deliverSignupOtp({ otpMethod, phone: normalizedPhone, email: normalizedEmail, otp: plainOtp });
 
     return res.status(200).json(
-        //* Return the NORMALISED number: the client echoes it back to
-        //* verify-otp, and the OTP is filed under this shape.
-        new ApiResponse(200, { phone: normalizedPhone }, "OTP sent to your phone number. Please verify to complete registration.")
+        //* Return the NORMALISED number and address: the client echoes them
+        //* back to verify-otp, and the OTP is filed under one of these shapes.
+        new ApiResponse(200, { phone: normalizedPhone, email: normalizedEmail, otpMethod },
+            otpMethod === 'email'
+                ? "OTP sent to your email address. Please verify to complete registration."
+                : "OTP sent to your phone number. Please verify to complete registration.")
     );
 });
 
 const verifyRegistrationOTP = asyncHandler(async (req, res) => {
-    const { phone, otp } = req.body;
+    const { phone, email, otp } = req.body;
+    //* Which code is being checked: the SMS one (the default) or the email one.
+    const otpMethod = readSignupOtpMethod(req.body);
 
-    if (!phone || !otp) {
+    if (otpMethod === 'email') {
+        if ((!phone && !email) || !otp) {
+            throw new ApiError(400, "Email address and OTP are required");
+        }
+    } else if (!phone || !otp) {
         throw new ApiError(400, "Phone number and OTP are required");
     }
 
     //* Registration files the OTP under the normalised number, so normalise
     //* here too — otherwise a client echoing back the bare national number
     //* would not find the record it had just been sent.
-    const normalizedPhone = normalizePhone(phone);
+    let otpIdentifier = phone ? normalizePhone(phone) : null;
+
+    //* An email code is filed under the address on the pending signup, so that
+    //* signup is read first; a client that also sent an `email` of its own has
+    //* to be talking about that same address.
+    if (otpMethod === 'email') {
+        const pending = await findPendingSignup({ phone, email }).lean();
+        if (!pending) {
+            throw new ApiError(404, "Registration session not found. Please register again.");
+        }
+        otpIdentifier = normalizeEmail(pending.email);
+        if (email && normalizeEmail(email) !== otpIdentifier) {
+            throw new ApiError(400, "This email address does not match your sign-up. Please register again.");
+        }
+    }
 
     const otpRecord = await AuthOtp.findOne({
-        identifier: normalizedPhone,
-        type: "phone",
+        identifier: otpIdentifier,
+        type: otpMethod,
         purpose: "registration",
     });
 
@@ -258,7 +328,7 @@ const verifyRegistrationOTP = asyncHandler(async (req, res) => {
     //* hydrated document would drop them on read and the consent would be lost
     //* between the two halves of registration. Everything below reads plain
     //* fields off this object, so lean costs nothing.
-    const tempUser = await TempUser.findOne({ phoneNumber: normalizedPhone }).lean();
+    const tempUser = await findPendingSignup({ phone, email }).lean();
     if (!tempUser) {
         throw new ApiError(404, "Registration session not found. Please register again.");
     }
@@ -335,7 +405,10 @@ const verifyRegistrationOTP = asyncHandler(async (req, res) => {
         phoneNumber: normalizePhone(tempUser.phoneNumber),
         dateOfBirth: tempUser.dateOfBirth,
         gender: tempUser.gender || 'prefer-not-to-say',
-        isPhoneVerified: true,
+        //* Only the channel the code actually arrived on is proven. The other
+        //* one is verified later from Settings, and both are needed before the
+        //* account can switch to business (business/switch.js).
+        ...verifiedFlagsFor(otpMethod),
         accountStatus: "active",
         isDeleted: false,
         deletedAt: null,
@@ -424,25 +497,35 @@ const verifyRegistrationOTP = asyncHandler(async (req, res) => {
 });
 
 const resendRegistrationOTP = asyncHandler(async (req, res) => {
-    const { phone } = req.body;
-    const request_type = 'phonenumber_verify';
+    const { phone, email } = req.body;
 
-    if (!phone) {
+    if (!phone && !email) {
         throw new ApiError(400, "Phone number is required");
     }
 
-    const normalizedPhone = normalizePhone(phone);
+    //* .lean(): `otpMethod` is parked on the row without being declared on
+    //* TempUserSchema (like the consent fields), so a hydrated document would
+    //* not show it.
+    const tempUser = await findPendingSignup({ phone, email }).lean();
+
+    //* The channel asked for now; else the one the signup started with; else
+    //* SMS, which is what a client that predates the choice expects. Asking
+    //* for the other channel here is how "send it to my email instead" works.
+    const otpMethod = resendSignupOtpMethod(req.body, tempUser?.otpMethod);
+
+    const normalizedPhone = normalizePhone(tempUser?.phoneNumber || phone);
 
     //* Before anything is charged for it — see registerUser above. A resend is
     //* where the old ordering hurt most: the cooldown armed by the previous
     //* request was still running, so the reply to an unreachable number was
     //* "please wait N seconds", not "this number cannot be used".
-    if (process.env.NODE_ENV !== 'development') assertSmsDeliverable(normalizedPhone);
+    if (otpMethod === 'phone' && normalizedPhone && process.env.NODE_ENV !== 'development') assertSmsDeliverable(normalizedPhone);
 
-    const tempUser = await TempUser.findOne({ phoneNumber: normalizedPhone });
     if (!tempUser) {
         throw new ApiError(404, "Registration session not found. Please register again.");
     }
+
+    const normalizedEmail = normalizeEmail(tempUser.email);
 
     const plainOtp = Math.floor(100000 + Math.random() * 900000).toString();
     const hashedOtp = await AuthOtp.hashOtp(plainOtp);
@@ -452,8 +535,8 @@ const resendRegistrationOTP = asyncHandler(async (req, res) => {
     //* sit on it and pull an OTP every minute forever. The shared limiter adds
     //* the per-account daily cap and the per-IP cap on top of that cooldown.
     await rateCheckAndUpsertOtp({
-        identifier: normalizedPhone,
-        type: "phone",
+        identifier: otpMethod === 'email' ? normalizedEmail : normalizedPhone,
+        type: otpMethod,
         purpose: "registration",
         hashedOtp,
         expiry,
@@ -462,25 +545,18 @@ const resendRegistrationOTP = asyncHandler(async (req, res) => {
 
     //* Same handling as registerUser above. Unwrapped, a gateway failure threw
     //* a raw error that became a 500 — "something broke on our end" — when the
-    //* truth is a 503: the SMS provider would not take it, and retrying may
-    //* well work. The daily OTP cap has already been consumed by
+    //* truth is a 503: the provider would not take it, and retrying may well
+    //* work. The daily OTP cap has already been consumed by
     //* rateCheckAndUpsertOtp either way, so the person deserves to know which
     //* of the two it was.
-    try {
-        await sendSms({ phone: normalizedPhone, otp: plainOtp, request_type });
-    } catch (smsErr) {
-        if (process.env.NODE_ENV === 'development') {
-            console.warn(`[DEV] SMS failed (${smsErr.message}). OTP for ${normalizedPhone}: ${plainOtp}`);
-        } else if (smsErr instanceof ApiError) {
-            //* Unsupported number, not a gateway failure — see registerUser.
-            throw smsErr;
-        } else {
-            throw new ApiError(503, `Failed to send OTP: ${smsErr.message}. Please try again or contact support.`);
-        }
-    }
+    await deliverSignupOtp({ otpMethod, phone: normalizedPhone, email: normalizedEmail, otp: plainOtp });
+
+    //* Remember the channel, so the next resend that does not say repeats it.
+    await TempUser.updateOne({ _id: tempUser._id }, { $set: { otpMethod } }, { strict: false });
 
     return res.status(200).json(
-        new ApiResponse(200, { retryAfterSeconds: 60 }, "OTP resent successfully")
+        new ApiResponse(200, { retryAfterSeconds: 60, otpMethod, phone: normalizedPhone, email: normalizedEmail },
+            otpMethod === 'email' ? "OTP sent to your email address" : "OTP resent successfully")
     );
 });
 

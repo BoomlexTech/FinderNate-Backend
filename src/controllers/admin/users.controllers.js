@@ -141,6 +141,9 @@ export const verifyBlueTick = asyncHandler(async (req, res) => {
     }
 
     user.isBlueTickVerified = isBlueTickVerified;
+    // An admin's decision owns the tick from here on: it no longer comes and
+    // goes with Findernate Plus (utils/plusBadge.js).
+    user.blueTickFromPlus = false;
     await user.save();
 
     await req.admin.logActivity(

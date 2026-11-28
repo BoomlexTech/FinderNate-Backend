@@ -318,6 +318,7 @@ export class MetricsCollector {
         totalRevenue: 0,
         subscriptionsByPlan: {
             free: 0,
+            basic: 0,
             small_business: 0,
             corporate: 0
         }
@@ -380,6 +381,7 @@ export class MetricsCollector {
             totalRevenue: 0,
             subscriptionsByPlan: {
                 free: 0,
+                basic: 0,
                 small_business: 0,
                 corporate: 0
             }

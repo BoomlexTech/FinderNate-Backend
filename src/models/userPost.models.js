@@ -179,11 +179,17 @@ const ServiceDetailsSchema = new mongoose.Schema({
         default: 0,
         min: 0
     },
+    // No longer asked for in the service form (the price is the price). Kept
+    // so services posted before that still charge what they said at checkout.
     additionalCharges:{
         type: Number,
         default: 0,
         min: 0
     },
+    // "Hide address": the street address is not on this document at all, it
+    // is in ServicePrivateAddress, readable only by the owner. `location`
+    // below then holds no address and no exact map point.
+    hideAddress: { type: Boolean, default: false },
     gstPercent: {
         type: Number,
         default: 0,

@@ -15,6 +15,7 @@ import { ApiError } from "../../utils/ApiError.js";
 import { ApiResponse } from "../../utils/ApiResponse.js";
 import { asyncHandler } from "../../utils/asyncHandler.js";
 import { notifyStatusChange } from "./helpers.js";
+import { deletePrivateServiceAddress } from "../../utils/serviceAddress.utils.js";
 
 // Statuses a report can be listed by or moved to. 'under_review' is set by the
 // escalation in report.controllers.js once enough complaints accumulate; it was
@@ -137,6 +138,7 @@ const takeDownPost = async (post) => {
     // that no longer exist.
     await Post.findByIdAndDelete(post._id);
     await User.findByIdAndUpdate(post.userId, { $pull: { posts: post._id } });
+    await deletePrivateServiceAddress(post._id).catch(() => {});
     await cancelBoostsForPost(post._id).catch((error) =>
         console.error("Could not cancel boosts for a removed post:", error));
 

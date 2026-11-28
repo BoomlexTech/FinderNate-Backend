@@ -120,3 +120,23 @@ export const matchCities = (query, withPosts = [], limit = 8) => {
         .slice(0, Math.max(1, limit))
         .map((x) => ({ name: x.c.name, hasPosts: x.c.hasPosts }));
 };
+
+/**
+ * Tops a list of city suggestions up with smaller towns from the places list.
+ * The first list keeps its order and its `hasPosts`; a town already in it is
+ * not repeated; a town carries its state so two towns with one name can be
+ * told apart ("Salem" exists in more than one state). Pure.
+ */
+export const withMoreTowns = (cities, towns, limit = 8) => {
+    const max = Math.max(1, limit);
+    const result = (cities || []).slice(0, max);
+    const seen = new Set(result.map((c) => normalizeCity(c.name)));
+    for (const town of towns || []) {
+        if (result.length >= max) break;
+        const key = normalizeCity(town?.name);
+        if (!key || seen.has(key)) continue;
+        seen.add(key);
+        result.push({ name: town.name, hasPosts: false, ...(town.state ? { state: town.state } : {}) });
+    }
+    return result;
+};

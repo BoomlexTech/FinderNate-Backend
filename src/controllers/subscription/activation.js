@@ -17,9 +17,14 @@ import Subscription from '../../models/subscription.models.js';
 import { sendAdminAlert } from '../../utils/adminAlert.utils.js';
 import { needsAccountManagerAlert } from '../../utils/accountManager.utils.js';
 import { announceActivation, announcePlanEnded, reopenActivationNotice } from './notices.js';
+import { tierRank } from '../../utils/planLimits.js';
 
-/** Which Business.plan tier a subscription maps to. */
+/**
+ * Which Business.plan tier a subscription maps to: Basic -> 'basic',
+ * Pro (small_business) -> 'plan2', Premium (corporate) -> 'plan3'.
+ */
 export const PLAN_TO_BUSINESS_PLAN = {
+    basic: 'basic',
     small_business: 'plan2',
     corporate: 'plan3'
 };
@@ -52,20 +57,20 @@ export const downgradeBusinessToFree = async (userId) => {
 const alertCorporateNeedsManager = async (user, business) => {
     try {
         await sendAdminAlert({
-            subject: 'New Corporate subscriber needs an account manager',
-            title: 'New Corporate subscriber',
-            preheader: `${business.businessName || user.fullName} subscribed to Corporate.`,
-            intro: 'A Corporate subscriber has no account manager yet. The plan promises a dedicated one, and their app shows "being assigned" until you set one.',
+            subject: 'New Premium subscriber needs an account manager',
+            title: 'New Premium subscriber',
+            preheader: `${business.businessName || user.fullName} subscribed to Premium.`,
+            intro: 'A Premium subscriber has no account manager yet. The plan promises a dedicated one, and their app shows "being assigned" until you set one.',
             details: [
                 ['Business', business.businessName],
                 ['Owner', user.fullName],
                 ['Email', user.email],
                 ['Phone', user.phoneNumber]
             ],
-            footer: 'Assign one under Admin > All Businesses > Corporate without manager.'
+            footer: 'Assign one under Admin > All Businesses > Premium without manager.'
         });
     } catch (error) {
-        console.error('Could not send the Corporate account-manager alert:', error?.message);
+        console.error('Could not send the Premium account-manager alert:', error?.message);
     }
 };
 
@@ -164,10 +169,8 @@ export const isPossiblyBillingPlaySubscription = (subscription) =>
         subscription.playPurchaseToken
     );
 
-const PLAN_RANK = { free: 0, small_business: 1, corporate: 2 };
-
-/** Corporate > Small Business > Free; an unknown plan counts as Free. */
-export const planRank = (plan) => PLAN_RANK[plan] ?? 0;
+/** Premium (corporate) > Pro (small_business) > Basic > Free; an unknown plan counts as Free. */
+export const planRank = (plan) => tierRank(plan);
 
 /**
  * The success line for an activation. "Upgraded" is only true for an upgrade, so

@@ -21,6 +21,7 @@ import { getFeedSignals, rankTimeExpression, excludedObjectIds } from '../utils/
 import { annotateSeen } from '../utils/seenFlags.utils.js';
 import { filterCommercialPosts } from '../utils/businessVisibility.utils.js';
 import { attachCollaborators } from '../utils/collab.utils.js';
+import { isPlusActiveForUserId } from '../utils/plusBadge.js';
 import {
     feedBoostSlotCount,
     feedRotationSeed,
@@ -269,7 +270,13 @@ export const getHomeFeed = asyncHandler(async (req, res) => {
         // place in that band. Chosen per viewer and per 5 minutes so the slots
         // rotate between boosts, and so the choice is stable across the pages of
         // one browsing session.
-        const liveBoosts = await getLiveBoosts(paidPlanByUserId);
+        //
+        // A personal account on Findernate Plus sees no boosted posts at all
+        // (the same promise as "no ads"): for that viewer no post takes a
+        // boosted slot or the Promoted label, and nothing is charged to a
+        // boost as an impression. The posts themselves still appear in their
+        // ordinary place.
+        const liveBoosts = (await isPlusActiveForUserId(userId)) ? [] : await getLiveBoosts(paidPlanByUserId);
         let promotedPostIds = [];
         if (liveBoosts.length > 0) {
             const visibleBoosted = await Post.find({

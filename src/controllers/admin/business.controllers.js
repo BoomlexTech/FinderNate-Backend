@@ -33,7 +33,7 @@ export const getAllBusinesses = asyncHandler(async (req, res) => {
         filter.subscriptionStatus = subscriptionStatus;
     }
 
-    if (['plan1', 'plan2', 'plan3'].includes(plan)) {
+    if (['plan1', 'basic', 'plan2', 'plan3'].includes(plan)) {
         filter.plan = plan;
     }
 
@@ -88,7 +88,7 @@ export const assignAccountManager = asyncHandler(async (req, res) => {
     }
 
     if (business.plan !== 'plan3') {
-        throw new ApiError(400, "An account manager can only be assigned to a Corporate subscriber");
+        throw new ApiError(400, "An account manager can only be assigned to a Premium subscriber");
     }
 
     const { adminId } = req.body;

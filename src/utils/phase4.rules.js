@@ -9,8 +9,8 @@ export const TIERS = Object.freeze({ HIDDEN: 'hidden', NETWORK: 'network', PUBLI
 
 export const COMMERCIAL_TYPES = new Set(['product', 'service', 'business']);
 
-/** Business.plan values: plan1 = Free, plan2 = Small Business, plan3 = Corporate (Premium), plan4 = legacy top tier. */
-export const PAID_PLANS = new Set(['plan2', 'plan3', 'plan4']);
+/** Business.plan values: plan1 = Free, basic = Basic, plan2 = Pro, plan3 = Premium, plan4 = legacy top tier. */
+export const PAID_PLANS = new Set(['basic', 'plan2', 'plan3', 'plan4']);
 export const PREMIUM_PLANS = new Set(['plan3', 'plan4']);
 
 /**

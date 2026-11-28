@@ -12,6 +12,7 @@ import { filterBusinessPostsByPaymentPlan } from "../utils/businessPlan.utils.js
 import { batchIsLikedByUser, batchGetLikedByUsers, batchGetLikesCount, batchSharedCount } from "../utils/postEngagement.utils.js";
 import { getLikedByPreview } from "../utils/likedByPreview.utils.js";
 import { getLiveBoosts, isCorporateBusinessPlan, orderPaidForExplore, recordBoostImpressions } from "../utils/boostServing.js";
+import { isPlusActiveForUserId } from "../utils/plusBadge.js";
 import { feedSeed, seededShuffler } from "../utils/feedOrder.utils.js";
 import mongoose from "mongoose";
 
@@ -75,7 +76,8 @@ export const getExploreFeed = asyncHandler(async (req, res) => {
     const activePlanUserIdsSet = new Set(activePaymentPlanUserIds.map(b => b.userId.toString()));
     const paidPlanByUserId = new Map(activePaymentPlanUserIds.map(b => [b.userId.toString(), b.plan]));
 
-    const liveBoosts = await getLiveBoosts(paidPlanByUserId);
+    // Findernate Plus: no boosted posts for this viewer (see homeFeed).
+    const liveBoosts = (await isPlusActiveForUserId(viewerId)) ? [] : await getLiveBoosts(paidPlanByUserId);
 
     // Get all posts matching the criteria using the same reliable approach as homeFeed (excluding blocked users and respecting privacy)
     const recentPosts = await Post.find({

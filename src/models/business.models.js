@@ -103,9 +103,11 @@ const BusinessSchema = new mongoose.Schema({
         clicks: { type: Number, default: 0 },
         conversions: { type: Number, default: 0 }
     },
+    // plan1 = Free, basic = Basic, plan2 = Pro, plan3 = Premium, plan4 = the
+    // unsold legacy top tier. Anything but plan1 is a paid plan.
     plan: {
         type: String,
-        enum: ['plan1', 'plan2', 'plan3', 'plan4'],
+        enum: ['plan1', 'basic', 'plan2', 'plan3', 'plan4'],
         default: 'plan1'
     },
     subscriptionStatus: {

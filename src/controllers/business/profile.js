@@ -12,6 +12,7 @@ import mongoose from "mongoose";
 import { BUSINESS_CATEGORIES, extractTagsFromText } from "./helpers.js";
 import { cancelBoostsForPost } from "../../utils/boostServing.js";
 import { normalizeSocialLinks, withProtocol, isWebLink } from "../../utils/socialLinks.utils.js";
+import { assertContactsVerifiedForBusiness } from "./switch.js";
 
 // Adds https:// to the website fields when the person typed "mysite.com", so the
 // form no longer fails with "Invalid website URL" for an ordinary address.
@@ -56,6 +57,11 @@ export const createBusinessProfile = asyncHandler(async (req, res) => {
 
     const user = await User.findById(userId);
     if (!user) throw new ApiError(404, "User not found");
+
+    // Creating the business profile also turns business mode on (below), so it
+    // is held to the same rule as the switch itself: email and mobile number
+    // verified first. A no-op for an account already in business mode.
+    assertContactsVerifiedForBusiness(user);
 
     let existingBusiness = await Business.findOne({ userId });
 
@@ -225,7 +231,10 @@ export const createBusinessProfile = asyncHandler(async (req, res) => {
         let businessSubscriptionStatus = 'pending';
 
         if (userSubscription) {
-            if (userSubscription.plan === 'small_business') {
+            if (userSubscription.plan === 'basic') {
+                businessPlan = 'basic';
+                businessSubscriptionStatus = 'active';
+            } else if (userSubscription.plan === 'small_business') {
                 businessPlan = 'plan2';
                 businessSubscriptionStatus = 'active';
             } else if (userSubscription.plan === 'corporate') {
@@ -862,6 +871,10 @@ export const updateBusinessCategory = asyncHandler(async (req, res) => {
     let business = await Business.findOne({ userId });
 
     if (!business) {
+        // Setting a category with no business yet creates one and turns
+        // business mode on, so the same rule as the switch applies.
+        assertContactsVerifiedForBusiness(await User.findById(userId).select('isBusinessProfile isEmailVerified isPhoneVerified'));
+
         // subscriptionStatus starts 'pending', NOT 'active'.
         //
         // The pre-save hook in business.models.js turns any transition into

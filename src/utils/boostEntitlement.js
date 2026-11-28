@@ -2,7 +2,7 @@ import PostBoost from '../models/postBoost.models.js';
 import Post from '../models/userPost.models.js';
 import { User } from '../models/user.models.js';
 import { ApiError } from './ApiError.js';
-import { PLAN_LIMITS, PAID_TIERS, TIER_NAMES, resolvePlanTier, istMonthWindow } from './planLimits.js';
+import { PLAN_LIMITS, PAID_TIERS, TIER_NAMES, resolvePlanTier, istMonthWindow, tierRank } from './planLimits.js';
 
 /**
  * Who may boost what, and for how long.
@@ -59,7 +59,9 @@ export const boostStateOf = (boost, now = new Date()) => {
 // Errors
 // ---------------------------------------------------------------------------
 
-const upgradeTargetsFor = (tier) => (tier === 'free' ? PAID_TIERS : tier === 'small_business' ? ['corporate'] : []);
+// The plans that would lift a boost limit: the boost-capable plans above this one.
+const upgradeTargetsFor = (tier) =>
+    PAID_TIERS.filter((plan) => PLAN_LIMITS[plan].boost && tierRank(plan) > tierRank(tier));
 
 const formatDayMonthIST = (date) =>
     new Intl.DateTimeFormat('en-IN', { day: 'numeric', month: 'long', timeZone: 'Asia/Kolkata' }).format(date);
@@ -78,7 +80,7 @@ const entitlementError = (statusCode, message, tier, extra) => {
 export const boostRequiresPlanError = (tier, message) =>
     entitlementError(
         403,
-        message || 'Boosts are included with the Small Business and Corporate plans. Upgrade to boost this post.',
+        message || 'Boosts are included with the Pro and Premium plans. Upgrade to boost this post.',
         tier,
         { errorCode: 'BOOST_REQUIRES_PLAN' }
     );
@@ -185,7 +187,7 @@ const parseStart = (startsAt, limits, now, tier) => {
     if (!limits.canSchedule) {
         throw boostRequiresPlanError(
             tier,
-            'Scheduling a boost for a later date is available on the Corporate plan. Start this boost now, or upgrade to Corporate.'
+            'Scheduling a boost for a later date is available on the Premium plan. Start this boost now, or upgrade to Premium.'
         );
     }
     const latest = now.getTime() + limits.maxScheduleAheadDays * MS_PER_DAY;
@@ -234,7 +236,7 @@ export const evaluateBoostRequest = async ({ tier, days, startsAt, now = new Dat
     // + 1 for the boost being created, which is live for the whole window.
     if (peakOverlap(overlapping, start, end) + 1 > limits.maxConcurrent) {
         const upgrade = tier === 'small_business'
-            ? ` Upgrade to Corporate to boost up to ${PLAN_LIMITS.corporate.boost.maxConcurrent} posts at once.`
+            ? ` Upgrade to Premium to boost up to ${PLAN_LIMITS.corporate.boost.maxConcurrent} posts at once.`
             : '';
         const noun = limits.maxConcurrent === 1 ? 'boost' : 'boosts';
         throw boostLimitError(
@@ -248,7 +250,7 @@ export const evaluateBoostRequest = async ({ tier, days, startsAt, now = new Dat
         const { resetsAt } = istMonthWindow(start);
         throw boostLimitError(
             tier,
-            `You've started all ${limits.maxPerMonth} boosts for this month on the ${tierName} plan. Upgrade to Corporate for unlimited boosts, or start another from ${formatDayMonthIST(resetsAt)}.`,
+            `You've started all ${limits.maxPerMonth} boosts for this month on the ${tierName} plan. Upgrade to Premium for unlimited boosts, or start another from ${formatDayMonthIST(resetsAt)}.`,
             { limit: 'monthly', max: limits.maxPerMonth, used: monthStarts, resetsAt: resetsAt.toISOString() }
         );
     }

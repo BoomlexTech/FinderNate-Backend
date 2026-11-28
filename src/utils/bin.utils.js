@@ -16,6 +16,8 @@ import { clearStickerResponses } from '../controllers/storyStickers.controllers.
 import { cancelBoostsForPost } from './boostServing.js';
 import { getSettingValue } from './appSettings.utils.js';
 import { binPreviewOf, mediaUrlsOf, restoredStoryState } from './bin.rules.js';
+import { deletePrivateServiceAddress } from './serviceAddress.utils.js';
+
 
 export { binPreviewOf, mediaUrlsOf, restoredStoryState };
 
@@ -93,6 +95,8 @@ export const purgeBinItem = async (item) => {
             PaymentLink.updateMany({ postId: id, status: 'active' }, { $set: { status: 'cancelled' } }),
             cancelBoostsForPost(id),
             retireOriginalSound(id),
+            // A service post's hidden street address goes with the post.
+            deletePrivateServiceAddress(id),
         ]);
     } else {
         await StoryComment.deleteMany({ storyId: id });
